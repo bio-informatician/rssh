@@ -27,6 +27,12 @@ type Session struct {
 	Latency    time.Duration
 	isHost     bool
 
+	idleTimeout time.Duration
+	hardLimit   time.Duration
+	idleTimer   *time.Timer
+	hardTimer   *time.Timer
+	timerMu     sync.Mutex
+
 	closeMu sync.Mutex
 	closed  bool
 }
@@ -77,6 +83,36 @@ func (s *Session) Ping() (time.Duration, error) {
 	return s.Yamux.Ping()
 }
 
+// SetSessionTimeouts enables local client/host idle and hard duration timeouts
+func (s *Session) SetSessionTimeouts(idleTimeout, hardLimit time.Duration) {
+	s.timerMu.Lock()
+	defer s.timerMu.Unlock()
+
+	s.idleTimeout = idleTimeout
+	s.hardLimit = hardLimit
+
+	if hardLimit > 0 {
+		s.hardTimer = time.AfterFunc(hardLimit, func() {
+			_ = s.Close()
+		})
+	}
+
+	if idleTimeout > 0 {
+		s.idleTimer = time.AfterFunc(idleTimeout, func() {
+			_ = s.Close()
+		})
+	}
+}
+
+// TouchActivity resets the local idle timeout timer upon data transfer
+func (s *Session) TouchActivity() {
+	s.timerMu.Lock()
+	defer s.timerMu.Unlock()
+	if s.idleTimer != nil && s.idleTimeout > 0 {
+		s.idleTimer.Reset(s.idleTimeout)
+	}
+}
+
 // Close gracefully closes the session and underlying channels
 func (s *Session) Close() error {
 	s.closeMu.Lock()
@@ -85,6 +121,15 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closed = true
+
+	s.timerMu.Lock()
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+	}
+	if s.hardTimer != nil {
+		s.hardTimer.Stop()
+	}
+	s.timerMu.Unlock()
 
 	if s.Yamux != nil {
 		_ = s.Yamux.Close()

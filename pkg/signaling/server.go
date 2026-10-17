@@ -311,6 +311,11 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 	}
 }
 
+// BroadcastTerminate pushes an immediate termination frame over WebSockets and revokes the session
+func (s *Server) BroadcastTerminate(sessionID, reason string) {
+	s.TerminateSession(sessionID, reason)
+}
+
 // TerminateSession revokes an active session immediately, unlocking the host and sending TypeTerminate to peers
 func (s *Server) TerminateSession(sessionID, reason string) {
 	s.mu.Lock()

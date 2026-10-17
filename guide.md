@@ -266,3 +266,29 @@ A Host ID can only be bound to **one active session** at a time:
   `{"type": "error", "error": "host is busy with another active session"}`.
 - The lock is atomically released as soon as the session closes or terminates.
 
+---
+
+## 7. EU & US Regulatory Compliance, Privacy & Abuse Prevention
+
+### 1. European Union (GDPR / Privacy by Design)
+- **Zero-Knowledge Processing**: The signaling relay server (`rssh-server`) processes metadata solely to broker initial handshakes. Decrypted terminal streams, keystrokes, and file payloads never touch the server.
+- **Transient Routing**: IP addresses and session state reside purely in volatile memory and are cleaned upon session termination.
+- **Local User Audit Trail**: Successful connections, rejected connection attempts, and disconnections are appended to `~/.config/rssh/audit.log` on the Host machine for full user visibility.
+
+### 2. United States (EAR Export Controls & DMCA Safe Harbor)
+- **Export Control (EAR)**: Utilizes standard open-source cryptographic primitives (`Ed25519`, `SPAKE2`, `ChaCha20-Poly1305`) adhering to 15 CFR § 742.15(b) mass-market compliance.
+- **Abuse Prevention & Client Blocking**:
+  Host operators can permanently ban unauthorized client IDs from connecting:
+  ```bash
+  # Ban an unauthorized client ID
+  rssh block 123-456-789
+
+  # View all blocked client IDs
+  rssh blocked
+
+  # Remove a client from the ban list
+  rssh unblock 123-456-789
+  ```
+- **Legal Notice**: See [LICENSE](file:///home/shrm/project/rssh/LICENSE) for explicit acceptable use disclaimers prohibiting unauthorized network intrusion.
+
+

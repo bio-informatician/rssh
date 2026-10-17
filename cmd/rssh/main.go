@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"rssh/pkg/audit"
 	"rssh/pkg/daemon"
 	"rssh/pkg/id"
 	"rssh/pkg/pty"
@@ -73,6 +74,9 @@ and pseudo-terminal ecosystem tool operating behind strict NATs and firewalls.`,
 	rootCmd.AddCommand(newProxyCmd())
 	rootCmd.AddCommand(newForwardCmd())
 	rootCmd.AddCommand(newDaemonCmd())
+	rootCmd.AddCommand(newBlockCmd())
+	rootCmd.AddCommand(newUnblockCmd())
+	rootCmd.AddCommand(newBlockedCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -183,12 +187,64 @@ func newDaemonCmd() *cobra.Command {
 	return cmd
 }
 
+func newBlockCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "block <client-id>",
+		Short: "Permanently ban an unauthorized client ID",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			b := audit.NewBlocklist("")
+			if err := b.Block(args[0]); err != nil {
+				log.Fatalf("failed to block client: %v", err)
+			}
+			fmt.Printf("✔ Client %s added to permanent blocklist (~/.config/rssh/blocked_clients)\n", args[0])
+		},
+	}
+}
+
+func newUnblockCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unblock <client-id>",
+		Short: "Remove a client ID from the permanent blocklist",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			b := audit.NewBlocklist("")
+			if err := b.Unblock(args[0]); err != nil {
+				log.Fatalf("failed to unblock client: %v", err)
+			}
+			fmt.Printf("✔ Client %s removed from blocklist\n", args[0])
+		},
+	}
+}
+
+func newBlockedCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "blocked",
+		Short: "List all currently banned client IDs",
+		Run: func(cmd *cobra.Command, args []string) {
+			b := audit.NewBlocklist("")
+			list := b.List()
+			if len(list) == 0 {
+				fmt.Println("No clients are currently blocked.")
+				return
+			}
+			fmt.Println("Permanently blocked client IDs:")
+			for _, id := range list {
+				fmt.Printf(" - %s\n", id)
+			}
+		},
+	}
+}
+
 func runHost(hostID, pin, serverURL string) {
 	fmt.Printf("\n🐎⚡ Rakhssh is ready!\n")
 	fmt.Printf("   ├── Machine ID : %s\n", hostID)
 	fmt.Printf("   ├── Secret PIN : %s\n", pin)
 	fmt.Printf("   └── Stealth    : Active (WSS/443 + P2P Standby)\n\n")
 	fmt.Println("Waiting for rider...")
+
+	auditLogger := audit.NewLogger("")
+	blocklist := audit.NewBlocklist("")
 
 	sigClient, err := signaling.Dial(serverURL)
 	if err != nil {
@@ -224,19 +280,33 @@ func runHost(hostID, pin, serverURL string) {
 	)
 	sigClient.SetTerminationHandler(func(sid, reason string) {
 		fmt.Printf("[-] Session %s terminated by server: %s\n", sid[:8], reason)
+		_ = auditLogger.Log(audit.EventSessionDisconnected, sid[:8], sid, "", fmt.Sprintf("Server terminated: %s", reason))
 	})
 
 	// Keep alive loop handling incoming sessions
 	for sessionID := range sessionCh {
 		fmt.Printf("[+] Incoming rider connection (Session: %s)\n", sessionID[:8])
 
+		if blocklist.IsBlocked(sessionID[:8]) {
+			fmt.Printf("[-] Rejected connection from blocked client %s\n", sessionID[:8])
+			_ = auditLogger.Log(audit.EventSessionRejected, sessionID[:8], sessionID, "", "Client on permanent blocklist")
+			continue
+		}
+
 		go func(sid string) {
 			session, err := transport.OrchestrateHost(ctx, sigClient, sid, pin, time.Duration(flagP2PTimeout)*time.Second)
 			if err != nil {
 				fmt.Printf("[-] Handshake failed for session %s: %v\n", sid[:8], err)
+				_ = auditLogger.Log(audit.EventSessionRejected, sid[:8], sid, "", fmt.Sprintf("Handshake error: %v", err))
 				return
 			}
 			defer session.Close()
+
+			session.SetSessionTimeouts(30*time.Minute, 2*time.Hour)
+			_ = auditLogger.Log(audit.EventSessionConnected, sid[:8], sid, string(session.Type), "Authenticated via PAKE")
+			defer func() {
+				_ = auditLogger.Log(audit.EventSessionDisconnected, sid[:8], sid, string(session.Type), "Session closed cleanly")
+			}()
 
 			fmt.Printf("✔ Connected to rider via %s\n", session.Type)
 
