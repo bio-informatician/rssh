@@ -1,34 +1,34 @@
-MIT License
+GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3, 19 November 2007
 
-Copyright (c) 2026 Rakhssh Contributors
+Copyright (C) 2026 Rakhssh Contributors
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 ---
 
-### Regulatory, Export Control & Acceptable Use Disclaimers
+### COMMERCIAL LICENSING & DUAL-LICENSE NOTICE
+If you plan to incorporate Rakhssh server components into a commercial cloud service, managed relay platform, or proprietary product without open-sourcing your infrastructure under the AGPLv3, a commercial proprietary license is required. Contact the maintainers for commercial licensing terms.
 
-1. **U.S. Export Administration Regulations (EAR) Compliance:**
-   This Software incorporates standard, publicly available open-source cryptographic primitives (including Ed25519, SPAKE2, and ChaCha20-Poly1305). Under the Export Administration Regulations (15 CFR § 742.15(b)), publicly available software containing mass-market standard encryption is not subject to EAR licensing requirements.
+---
 
-2. **Acceptable Use & Anti-Intrusion Policy:**
-   This Software is engineered strictly for authorized remote administration, development, and peer-to-peer command line operations. Any use of this tool for unauthorized computer intrusion, exploitation, denial-of-service, or data exfiltration without express authorization is strictly prohibited and constitutes a violation of international cybersecurity laws (including the U.S. Computer Fraud and Abuse Act and relevant EU directives).
+### U.S. EXPORT ADMINISTRATION REGULATIONS (EAR) COMPLIANCE
+This software utilizes standard, publicly available cryptographic algorithms (Ed25519, SPAKE2, ChaCha20-Poly1305). Under U.S. Export Administration Regulations (15 CFR § 742.15(b)), publicly available open-source software implementing standard mass-market encryption is eligible for export without specific individual licenses.
 
-3. **EU GDPR & Privacy by Design Notice:**
-   The signaling server components operate under a Zero-Knowledge paradigm. No decrypted session data, commands, or file transfers are monitored, intercepted, or persisted. Transient IP routing metadata is processed strictly in-memory for session brokerage.
+---
+
+### ACCEPTABLE USE POLICY & DISCLAIMER OF LIABILITY
+1. **As-Is Provision:** Rakhssh is provided on an "as is" and "as available" basis without warranties of any kind.
+2. **Authorized Administration Only:** This tool is strictly intended for lawful systems administration, authorized remote access, and personal development.
+3. **Anti-Intrusion:** Any use of Rakhssh to bypass network firewalls without authorization, perform unauthorized electronic intrusion, conduct denial-of-service, or exfiltrate protected data is strictly prohibited and constitutes a violation of domestic and international cybercrime statutes.

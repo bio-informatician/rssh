@@ -6,7 +6,7 @@
 *Zero-config, rootless, peer-to-peer SSH & terminal sharing with an AnyDesk-like (`ID + PIN`) experience.*
 
 [![Go Report Card](https://img.shields.io/badge/go%20report-A+-brightgreen.svg?style=flat-square)](https://goreportcard.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPLv3-blue.svg?style=flat-square)](https://www.gnu.org/licenses/agpl-3.0)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](http://makeapullrequest.com)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square)]()
 
@@ -171,5 +171,10 @@ Rakhssh is built in **Go** for zero-dependency cross-compilation, tiny binary fo
 ## 🤝 Contributing
 Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](#) if you want to help build the fastest stealth SSH tool in the open-source community.
 
+## ⚖️ Legal, Abuse Policy & Disclaimer
+- **As-Is Disclaimer:** Rakhssh is provided on an "as is" and "as available" basis without warranties of any kind. Use at your own risk.
+- **Acceptable Use & Anti-Intrusion:** Rakhssh is strictly engineered for authorized systems administration and development. Using Rakhssh to bypass enterprise firewalls without administrative consent, conduct electronic intrusion, or exfiltrate data is strictly prohibited and illegal under domestic and international cybersecurity laws.
+- **Responsible Disclosure:** If you discover a vulnerability, please report it via private security advisory.
+
 ## 📄 License
-Distributed under the **MIT License**. See `LICENSE` for more information.
+Distributed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** with dual-licensing available for commercial managed relay providers. See [LICENSE](file:///home/shrm/project/rssh/LICENSE) for more information.

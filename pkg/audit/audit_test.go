@@ -1,9 +1,9 @@
 package audit
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -22,9 +22,13 @@ func TestAuditLogger(t *testing.T) {
 		t.Fatalf("failed to read log: %v", err)
 	}
 
-	content := string(data)
-	if !strings.Contains(content, "EVENT=SESSION_CONNECTED") || !strings.Contains(content, "CLIENT=123-456-789") {
-		t.Fatalf("audit entry missing expected fields: %s", content)
+	var entry Entry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatalf("failed to parse JSON audit log entry: %v", err)
+	}
+
+	if entry.Event != EventSessionConnected || entry.ClientID != "123-456-789" || entry.SessionID != "sess_abc" {
+		t.Fatalf("audit entry mismatch: %+v", entry)
 	}
 }
 

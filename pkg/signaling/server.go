@@ -206,6 +206,15 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 
 	case TypeRegister:
 		s.mu.Lock()
+		if existing, ok := s.hosts[msg.ID]; ok && !existing.isClosed && existing != c {
+			s.mu.Unlock()
+			_ = c.WriteMessage(&Message{
+				Type:  TypeError,
+				ID:    msg.ID,
+				Error: "host ID already registered by another active instance",
+			})
+			return
+		}
 		c.hostID = msg.ID
 		s.hosts[msg.ID] = c
 		s.mu.Unlock()

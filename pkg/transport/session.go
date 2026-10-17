@@ -68,14 +68,43 @@ func NewSession(conn net.Conn, keys *crypto.SessionKeys, isHost bool, transportT
 	}, nil
 }
 
-// OpenStream opens a new multiplexed channel
-func (s *Session) OpenStream(ctx context.Context) (net.Conn, error) {
-	return s.Yamux.Open()
+type timedStream struct {
+	net.Conn
+	session *Session
 }
 
-// AcceptStream accepts an incoming multiplexed channel
+func (t *timedStream) Read(b []byte) (int, error) {
+	n, err := t.Conn.Read(b)
+	if n > 0 {
+		t.session.TouchActivity()
+	}
+	return n, err
+}
+
+func (t *timedStream) Write(b []byte) (int, error) {
+	n, err := t.Conn.Write(b)
+	if n > 0 {
+		t.session.TouchActivity()
+	}
+	return n, err
+}
+
+// OpenStream opens a new multiplexed channel with automated idle timer tracking
+func (s *Session) OpenStream(ctx context.Context) (net.Conn, error) {
+	stream, err := s.Yamux.Open()
+	if err != nil {
+		return nil, err
+	}
+	return &timedStream{Conn: stream, session: s}, nil
+}
+
+// AcceptStream accepts an incoming multiplexed channel with automated idle timer tracking
 func (s *Session) AcceptStream() (net.Conn, error) {
-	return s.Yamux.Accept()
+	stream, err := s.Yamux.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &timedStream{Conn: stream, session: s}, nil
 }
 
 // Ping measures round-trip latency across the multiplexed session

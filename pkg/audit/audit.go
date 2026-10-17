@@ -2,7 +2,7 @@ package audit
 
 import (
 	"bufio"
-	"fmt"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +49,7 @@ func NewLogger(path string) *Logger {
 	return &Logger{path: path}
 }
 
-// Log writes an audit entry with timestamp
+// Log writes an audit entry with timestamp as structured JSON
 func (l *Logger) Log(event EventType, clientID, sessionID, transport, details string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -65,11 +65,21 @@ func (l *Logger) Log(event EventType, clientID, sessionID, transport, details st
 	}
 	defer f.Close()
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	line := fmt.Sprintf("[%s] EVENT=%s CLIENT=%s SESSION=%s TRANSPORT=%s DETAILS=%s\n",
-		now, event, clientID, sessionID, transport, details)
+	entry := Entry{
+		Timestamp: time.Now().UTC(),
+		Event:     event,
+		ClientID:  clientID,
+		SessionID: sessionID,
+		Transport: transport,
+		Details:   details,
+	}
 
-	_, err = f.WriteString(line)
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+
+	_, err = f.WriteString(string(data) + "\n")
 	return err
 }
 
