@@ -1,0 +1,8 @@
+services:
+  rssh-server:
+    build: .
+    container_name: rssh-server
+    restart: always
+    ports:
+      - "8443:8443"
+    command: ["--addr", ":8443"]

@@ -1,0 +1,15 @@
+# Go binaries and tools installed locally
+.go/
+.gopath/
+.gocache/
+bin/
+/rssh
+/rssh-server
+
+# Coverage and test artifacts
+*.out
+*.test
+
+# IDE files
+.vscode/
+.idea/
