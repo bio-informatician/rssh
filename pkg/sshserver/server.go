@@ -8,12 +8,15 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/creack/pty"
 	"github.com/gliderlabs/ssh"
 	"github.com/pkg/sftp"
 	gossh "golang.org/x/crypto/ssh"
+
+	"rssh/pkg/daemon"
 )
 
 // Server encapsulates the embedded OpenSSH-compatible server
@@ -57,6 +60,8 @@ func NewServer() (*Server, error) {
 		},
 		SubsystemHandlers: map[string]ssh.SubsystemHandler{
 			"sftp": func(sess ssh.Session) {
+				daemon.BroadcastSecurityNotice(fmt.Sprintf("SFTP connection opened by user %q from %s", sess.User(), sess.RemoteAddr().String()))
+				defer daemon.BroadcastSecurityNotice(fmt.Sprintf("SFTP connection closed for user %q", sess.User()))
 				sftpServer, err := sftp.NewServer(sess)
 				if err != nil {
 					return
@@ -87,6 +92,12 @@ func NewServer() (*Server, error) {
 }
 
 func defaultSessionHandler(sess ssh.Session) {
+	user := sess.User()
+	remote := sess.RemoteAddr().String()
+
+	daemon.BroadcastSecurityNotice(fmt.Sprintf("SSH session opened for user %q from %s", user, remote))
+	defer daemon.BroadcastSecurityNotice(fmt.Sprintf("SSH session closed for user %q from %s", user, remote))
+
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/bash"
@@ -97,6 +108,9 @@ func defaultSessionHandler(sess ssh.Session) {
 
 	ptyReq, winCh, isPty := sess.Pty()
 	if isPty {
+		// Output queued security alerts to user's interactive terminal front-and-center
+		daemon.FlushPendingNotices(sess)
+
 		cmd := exec.Command(shell)
 		cmd.Env = append(cmd.Env, os.Environ()...)
 		cmd.Env = append(cmd.Env, sess.Environ()...)
@@ -143,6 +157,7 @@ func defaultSessionHandler(sess ssh.Session) {
 
 	// Exec command (used by scp, rsync, git, and remote commands)
 	if len(sess.Command()) > 0 {
+		daemon.BroadcastSecurityNotice(fmt.Sprintf("SSH command executed: %q by user %q from %s", strings.Join(sess.Command(), " "), user, remote))
 		cmd := exec.Command(sess.Command()[0], sess.Command()[1:]...)
 		cmd.Env = append(cmd.Env, os.Environ()...)
 		cmd.Env = append(cmd.Env, sess.Environ()...)

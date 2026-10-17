@@ -246,6 +246,9 @@ func runHost(hostID, pin, serverURL string) {
 	auditLogger := audit.NewLogger("")
 	blocklist := audit.NewBlocklist("")
 
+	// Flush any pending security notices accumulated while offline
+	daemon.FlushPendingNotices(os.Stderr)
+
 	sigClient, err := signaling.Dial(serverURL)
 	if err != nil {
 		log.Fatalf("failed to connect to signaling server %s: %v", serverURL, err)
@@ -280,15 +283,18 @@ func runHost(hostID, pin, serverURL string) {
 	)
 	sigClient.SetTerminationHandler(func(sid, reason string) {
 		fmt.Printf("[-] Session %s terminated by server: %s\n", sid[:8], reason)
+		daemon.BroadcastSecurityNotice(fmt.Sprintf("Session %s terminated by server: %s", sid[:8], reason))
 		_ = auditLogger.Log(audit.EventSessionDisconnected, sid[:8], sid, "", fmt.Sprintf("Server terminated: %s", reason))
 	})
 
 	// Keep alive loop handling incoming sessions
 	for sessionID := range sessionCh {
 		fmt.Printf("[+] Incoming rider connection (Session: %s)\n", sessionID[:8])
+		daemon.BroadcastSecurityNotice(fmt.Sprintf("Incoming rider connection for Session %s", sessionID[:8]))
 
 		if blocklist.IsBlocked(sessionID[:8]) {
 			fmt.Printf("[-] Rejected connection from blocked client %s\n", sessionID[:8])
+			daemon.BroadcastSecurityNotice(fmt.Sprintf("Rejected connection from blocked client %s", sessionID[:8]))
 			_ = auditLogger.Log(audit.EventSessionRejected, sessionID[:8], sessionID, "", "Client on permanent blocklist")
 			continue
 		}
@@ -297,6 +303,7 @@ func runHost(hostID, pin, serverURL string) {
 			session, err := transport.OrchestrateHost(ctx, sigClient, sid, pin, time.Duration(flagP2PTimeout)*time.Second)
 			if err != nil {
 				fmt.Printf("[-] Handshake failed for session %s: %v\n", sid[:8], err)
+				daemon.BroadcastSecurityNotice(fmt.Sprintf("Handshake failed for Session %s: %v", sid[:8], err))
 				_ = auditLogger.Log(audit.EventSessionRejected, sid[:8], sid, "", fmt.Sprintf("Handshake error: %v", err))
 				return
 			}
@@ -304,8 +311,11 @@ func runHost(hostID, pin, serverURL string) {
 
 			session.SetSessionTimeouts(30*time.Minute, 2*time.Hour)
 			_ = auditLogger.Log(audit.EventSessionConnected, sid[:8], sid, string(session.Type), "Authenticated via PAKE")
+			daemon.BroadcastSecurityNotice(fmt.Sprintf("Remote rider authenticated for Session %s via %s", sid[:8], session.Type))
+
 			defer func() {
 				_ = auditLogger.Log(audit.EventSessionDisconnected, sid[:8], sid, string(session.Type), "Session closed cleanly")
+				daemon.BroadcastSecurityNotice(fmt.Sprintf("Rider disconnected from Session %s", sid[:8]))
 			}()
 
 			fmt.Printf("✔ Connected to rider via %s\n", session.Type)
