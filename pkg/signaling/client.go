@@ -119,8 +119,16 @@ func (c *Client) pingPump() {
 }
 
 func (c *Client) dispatchMessage(msg *Message) {
+	// Capture handlers under the lock, then call the blocking relay handler outside
+	// to prevent a deadlock: holding mu while PushIncomingData blocks on a full readCh
+	// would prevent Close() (which also takes mu) from proceeding.
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	onRelay := c.onRelay
+	onIncoming := c.onIncoming
+	onPAKE := c.onPAKE
+	onSignal := c.onSignal
+	onClose := c.onClose
+	onTerminate := c.onTerminate
 
 	switch msg.Type {
 	case TypeRegistered:
@@ -135,36 +143,6 @@ func (c *Client) dispatchMessage(msg *Message) {
 		default:
 		}
 
-	case TypeIncoming:
-		if c.onIncoming != nil {
-			go c.onIncoming(msg.SessionID)
-		}
-
-	case TypePAKE:
-		if c.onPAKE != nil {
-			go c.onPAKE(msg.SessionID, msg.Data)
-		}
-
-	case TypeSignal:
-		if c.onSignal != nil {
-			go c.onSignal(msg.SessionID, msg.Data)
-		}
-
-	case TypeRelay:
-		if c.onRelay != nil {
-			go c.onRelay(msg.SessionID, msg.Data)
-		}
-
-	case TypeClose:
-		if c.onClose != nil {
-			go c.onClose(msg.SessionID)
-		}
-
-	case TypeTerminate:
-		if c.onTerminate != nil {
-			go c.onTerminate(msg.SessionID, msg.Error)
-		}
-
 	case TypeError:
 		err := errors.New(msg.Error)
 		select {
@@ -172,7 +150,38 @@ func (c *Client) dispatchMessage(msg *Message) {
 		default:
 		}
 	}
+	c.mu.Unlock()
+
+	// Call handlers outside the lock
+	switch msg.Type {
+	case TypeIncoming:
+		if onIncoming != nil {
+			go onIncoming(msg.SessionID)
+		}
+	case TypePAKE:
+		if onPAKE != nil {
+			go onPAKE(msg.SessionID, msg.Data)
+		}
+	case TypeSignal:
+		if onSignal != nil {
+			go onSignal(msg.SessionID, msg.Data)
+		}
+	case TypeRelay:
+		if onRelay != nil {
+			// Synchronous: preserves AEAD nonce sequence ordering
+			onRelay(msg.SessionID, msg.Data)
+		}
+	case TypeClose:
+		if onClose != nil {
+			go onClose(msg.SessionID)
+		}
+	case TypeTerminate:
+		if onTerminate != nil {
+			go onTerminate(msg.SessionID, msg.Error)
+		}
+	}
 }
+
 
 // WriteMessage sends a structured message to the signaling server
 func (c *Client) WriteMessage(msg *Message) error {
@@ -303,7 +312,8 @@ func NewRelayConn(client *Client, sessionID string) *RelayConn {
 	}
 }
 
-// PushIncomingData pushes incoming base64 payload from relay message into read channel
+// PushIncomingData pushes incoming base64 payload from relay message into read channel.
+// It must not hold any lock while blocking on the channel send.
 func (r *RelayConn) PushIncomingData(b64Data string) error {
 	data, err := base64.StdEncoding.DecodeString(b64Data)
 	if err != nil {
@@ -311,11 +321,14 @@ func (r *RelayConn) PushIncomingData(b64Data string) error {
 	}
 
 	r.closeMu.RLock()
-	defer r.closeMu.RUnlock()
-	if r.isClosed {
+	isClosed := r.isClosed
+	r.closeMu.RUnlock()
+
+	if isClosed {
 		return errors.New("relay conn closed")
 	}
 
+	// Block without holding any lock; Close() can proceed concurrently
 	select {
 	case r.readCh <- data:
 	case <-r.closeCh:

@@ -13,21 +13,34 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	// maxMessageBytes caps incoming WebSocket message size to prevent memory exhaustion attacks
+	maxMessageBytes = 64 * 1024 // 64 KB
+
+	// maxConnections caps total concurrent WebSocket connections
+	maxConnections = 5000
+
+	// maxRegistrationsPerConn limits how many times a single connection may register.
+	// A well-behaved host registers once. Repeated registration attempts leak map entries.
+	maxRegistrationsPerConn = 1
+)
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  65536,
 	WriteBufferSize: 65536,
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for seamless cross-environment connection
+		return true // Transport-layer origin enforcement is out of scope; TLS is enforced externally
 	},
 }
 
 type wsConn struct {
-	conn      *websocket.Conn
-	remoteIP  string
-	writeMu   sync.Mutex
-	isClosed  bool
-	hostID    string
-	sessionID string
+	conn          *websocket.Conn
+	remoteIP      string // parsed IP only (no port)
+	writeMu       sync.Mutex
+	isClosed      bool
+	hostID        string
+	sessionID     string
+	registrations int // how many TypeRegister messages this connection has sent
 }
 
 func (c *wsConn) WriteMessage(msg *Message) error {
@@ -71,6 +84,8 @@ type Server struct {
 	stopCh      chan struct{}
 	closeOnce   sync.Once
 	mu          sync.RWMutex
+	connCount   int
+	connMu      sync.Mutex
 }
 
 // NewServer creates a new signaling and relay server instance
@@ -142,7 +157,7 @@ func (s *Server) monitorTimeouts() {
 
 // ServeHTTP implements http.Handler for the signaling server
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// If it's not a WebSocket upgrade request, serve a stealth disguise page
+	// Serve a stealth disguise page for non-WebSocket requests
 	if r.Header.Get("Upgrade") != "websocket" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -157,17 +172,36 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce connection cap
+	s.connMu.Lock()
+	if s.connCount >= maxConnections {
+		s.connMu.Unlock()
+		http.Error(w, "server at capacity", http.StatusServiceUnavailable)
+		return
+	}
+	s.connCount++
+	s.connMu.Unlock()
+
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[Signaling] WebSocket upgrade error: %v", err)
+		s.connMu.Lock()
+		s.connCount--
+		s.connMu.Unlock()
 		return
 	}
+	// Hard cap on per-message size to prevent memory exhaustion
+	ws.SetReadLimit(maxMessageBytes)
 
 	c := &wsConn{
 		conn:     ws,
-		remoteIP: r.RemoteAddr,
+		remoteIP: RealIPFromRequest(r), // per-IP, not per-socket
 	}
-	go s.handleConnection(c)
+	s.handleConnection(c)
+
+	s.connMu.Lock()
+	s.connCount--
+	s.connMu.Unlock()
 }
 
 func (s *Server) handleConnection(c *wsConn) {
@@ -176,7 +210,6 @@ func (s *Server) handleConnection(c *wsConn) {
 		_ = c.Close()
 	}()
 
-	// Set keepalive
 	_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	c.conn.SetPongHandler(func(string) error {
 		_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -205,6 +238,16 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 		_ = c.WriteMessage(&Message{Type: TypePong})
 
 	case TypeRegister:
+		// Prevent repeated registrations on the same connection leaking map entries
+		if c.registrations >= maxRegistrationsPerConn {
+			_ = c.WriteMessage(&Message{
+				Type:  TypeError,
+				ID:    msg.ID,
+				Error: "duplicate registration on this connection",
+			})
+			return
+		}
+
 		s.mu.Lock()
 		if existing, ok := s.hosts[msg.ID]; ok && !existing.isClosed && existing != c {
 			s.mu.Unlock()
@@ -216,6 +259,7 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 			return
 		}
 		c.hostID = msg.ID
+		c.registrations++
 		s.hosts[msg.ID] = c
 		s.mu.Unlock()
 
@@ -239,9 +283,10 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 		hostConn, exists := s.hosts[targetID]
 		if !exists || hostConn.isClosed {
 			s.mu.Unlock()
+			// Return generic error: do not leak whether the ID is online (prevents enumeration)
 			_ = c.WriteMessage(&Message{
 				Type:  TypeError,
-				Error: fmt.Sprintf("host %s offline or not found", targetID),
+				Error: "host not found or unavailable",
 			})
 			return
 		}
@@ -286,6 +331,16 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 		})
 
 	case TypePAKE, TypeSignal, TypeRelay:
+		// Guard against server-supplied session IDs that are shorter than 8 chars
+		if len(msg.SessionID) < 8 {
+			_ = c.WriteMessage(&Message{
+				Type:      TypeError,
+				SessionID: msg.SessionID,
+				Error:     "invalid session ID",
+			})
+			return
+		}
+
 		s.mu.RLock()
 		pair, exists := s.sessions[msg.SessionID]
 		s.mu.RUnlock()
@@ -299,7 +354,7 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 		}
 
 		pair.mu.Lock()
-		pair.lastActivity = time.Now() // Update active activity timestamp
+		pair.lastActivity = time.Now()
 		var recipient *wsConn
 		if c == pair.client {
 			recipient = pair.host
@@ -325,7 +380,9 @@ func (s *Server) BroadcastTerminate(sessionID, reason string) {
 	s.TerminateSession(sessionID, reason)
 }
 
-// TerminateSession revokes an active session immediately, unlocking the host and sending TypeTerminate to peers
+// TerminateSession revokes an active session immediately, unlocking the host and sending TypeTerminate to peers.
+// After sending TypeTerminate the underlying WebSocket connections are closed so the host process
+// actually tears down the session (fixes audit finding: "terminate only logs on the host").
 func (s *Server) TerminateSession(sessionID, reason string) {
 	s.mu.Lock()
 	pair, exists := s.sessions[sessionID]
@@ -346,9 +403,11 @@ func (s *Server) TerminateSession(sessionID, reason string) {
 		}
 		if pair.client != nil && !pair.client.isClosed {
 			_ = pair.client.WriteMessage(termMsg)
+			_ = pair.client.Close() // force-close so the client's readPump exits
 		}
 		if pair.host != nil && !pair.host.isClosed {
 			_ = pair.host.WriteMessage(termMsg)
+			_ = pair.host.Close() // force-close so the host's readPump exits
 		}
 		pair.mu.Unlock()
 	}
@@ -360,7 +419,7 @@ func (s *Server) closeSession(sessionID string) {
 	if exists {
 		delete(s.sessions, sessionID)
 		if pair != nil && pair.hostID != "" {
-			delete(s.busyHosts, pair.hostID) // Release Single-Session Lock
+			delete(s.busyHosts, pair.hostID)
 		}
 	}
 	s.mu.Unlock()

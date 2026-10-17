@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,7 +21,16 @@ func PendingNoticesPath() string {
 	return filepath.Join(home, ".config", "rssh", "pending_notices")
 }
 
-// BroadcastSecurityNotice broadcasts an alert to active pseudo-terminals (/dev/pts/*) or queues it if offline
+// BroadcastSecurityNotice writes an alert to the operator's own pseudo-terminals (/dev/pts/*).
+//
+// Security notes:
+//   - The notice string MUST be sanitized by the caller before passing here.
+//   - We do NOT call wall(1) because that would broadcast to every logged-in user on
+//     the system, which is a security anti-pattern and can be exploited by a malicious server.
+//   - We do NOT write to /etc/motd or /run/motd.dynamic for the same reason.
+//
+// Returns true if at least one active terminal received the message.
+// If no terminal is reachable, the notice is queued in pending_notices.
 func BroadcastSecurityNotice(notice string) bool {
 	notifyMu.Lock()
 	defer notifyMu.Unlock()
@@ -30,7 +38,7 @@ func BroadcastSecurityNotice(notice string) bool {
 	activeNotified := false
 	alertMsg := fmt.Sprintf("\r\n\a🔔 [Rakhssh Security Alert] %s\r\n", notice)
 
-	// 1. Scan for and write to active pseudo-terminals (/dev/pts/*)
+	// Write to active pseudo-terminals (/dev/pts/*)
 	ptsList := ActivePTSDevices()
 	for _, ptsPath := range ptsList {
 		f, err := os.OpenFile(ptsPath, os.O_WRONLY, 0)
@@ -43,24 +51,16 @@ func BroadcastSecurityNotice(notice string) bool {
 		}
 	}
 
-	// 2. Fallback / parallel broadcast via 'wall' equivalent if available
-	if cmdPath, err := exec.LookPath("wall"); err == nil {
-		cmd := exec.Command(cmdPath)
-		cmd.Stdin = strings.NewReader(alertMsg)
-		if err := cmd.Run(); err == nil {
-			activeNotified = true
-		}
-	}
-
-	// 3. If no active terminal was available to receive the broadcast, queue to pending notices
+	// If no active terminal received the notice, queue it for the next login
 	if !activeNotified {
-		QueueNotice(notice)
+		queueNotice(notice)
 	}
 
 	return activeNotified
 }
 
-// ActivePTSDevices returns paths of accessible pseudo-terminals (/dev/pts/*)
+// ActivePTSDevices returns paths of accessible pseudo-terminals (/dev/pts/*).
+// Only devices that can be opened for writing are returned.
 func ActivePTSDevices() []string {
 	ptsDir := "/dev/pts"
 	entries, err := os.ReadDir(ptsDir)
@@ -83,13 +83,21 @@ func ActivePTSDevices() []string {
 	return active
 }
 
-// HasActiveSessions checks if any pseudo-terminals are currently active
+// HasActiveSessions checks if any pseudo-terminals are currently active.
 func HasActiveSessions() bool {
 	return len(ActivePTSDevices()) > 0
 }
 
-// QueueNotice appends an alert to the pending notices file and system MOTD if available
+// QueueNotice appends an alert to the pending notices file.
+// This is exported for use by tests and external packages.
 func QueueNotice(notice string) {
+	notifyMu.Lock()
+	defer notifyMu.Unlock()
+	queueNotice(notice)
+}
+
+// queueNotice is the internal (mutex-not-held) variant.
+func queueNotice(notice string) {
 	queuePath := PendingNoticesPath()
 	_ = os.MkdirAll(filepath.Dir(queuePath), 0700)
 
@@ -101,27 +109,10 @@ func QueueNotice(notice string) {
 		_, _ = f.WriteString(line)
 		_ = f.Close()
 	}
-
-	// Also attempt to append to system or user MOTD if writable
-	home, _ := os.UserHomeDir()
-	motdPaths := []string{
-		filepath.Join(home, ".motd"),
-		"/run/motd.dynamic",
-		"/etc/motd",
-	}
-	for _, mPath := range motdPaths {
-		if mPath == "" {
-			continue
-		}
-		if mf, err := os.OpenFile(mPath, os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-			_, _ = mf.WriteString(fmt.Sprintf("🔔 [Rakhssh Alert] %s", line))
-			_ = mf.Close()
-			break
-		}
-	}
 }
 
-// FlushPendingNotices reads, prints, and clears all queued security notices
+// FlushPendingNotices reads, prints, and clears all queued security notices.
+// It does NOT delete ~/.motd or write to system files.
 func FlushPendingNotices(w io.Writer) int {
 	notifyMu.Lock()
 	defer notifyMu.Unlock()
@@ -145,15 +136,8 @@ func FlushPendingNotices(w io.Writer) int {
 	}
 	fmt.Fprintf(w, "\n")
 
-	// Truncate / clear file
+	// Truncate / clear file after display
 	_ = os.WriteFile(queuePath, []byte{}, 0600)
-
-	// Clean user MOTD if present
-	home, _ := os.UserHomeDir()
-	userMotd := filepath.Join(home, ".motd")
-	if _, err := os.Stat(userMotd); err == nil {
-		_ = os.Remove(userMotd)
-	}
 
 	return len(lines)
 }

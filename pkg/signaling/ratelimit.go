@@ -1,6 +1,7 @@
 package signaling
 
 import (
+	"net/http"
 	"sync"
 	"time"
 )
@@ -13,13 +14,15 @@ type RateLimiter struct {
 	mu          sync.Mutex
 }
 
-// NewRateLimiter creates a sliding window rate limiter
+// NewRateLimiter creates a sliding window rate limiter and starts a background stale-entry cleanup goroutine.
 func NewRateLimiter(maxRequests int, window time.Duration) *RateLimiter {
-	return &RateLimiter{
+	r := &RateLimiter{
 		maxRequests: maxRequests,
 		window:      window,
 		clients:     make(map[string][]time.Time),
 	}
+	go r.periodicCleanup()
+	return r
 }
 
 // Allow checks if the given key is allowed to make a request
@@ -48,7 +51,7 @@ func (r *RateLimiter) Allow(key string) bool {
 	return true
 }
 
-// CleanStale removes inactive client entries
+// CleanStale removes inactive client entries (also called periodically).
 func (r *RateLimiter) CleanStale() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -61,4 +64,77 @@ func (r *RateLimiter) CleanStale() {
 			delete(r.clients, key)
 		}
 	}
+}
+
+// periodicCleanup runs CleanStale every window period in the background.
+func (r *RateLimiter) periodicCleanup() {
+	ticker := time.NewTicker(r.window)
+	defer ticker.Stop()
+	for range ticker.C {
+		r.CleanStale()
+	}
+}
+
+// ExtractIP parses the IP from an "ip:port" or raw IP RemoteAddr string,
+// stripping the port so rate-limiting is per-IP rather than per-socket.
+// A new WebSocket from the same IP should not reset the rate limit counter.
+func ExtractIP(remoteAddr string) string {
+	// net.SplitHostPort would be ideal but imports net; do it inline
+	for i := len(remoteAddr) - 1; i >= 0; i-- {
+		if remoteAddr[i] == ':' {
+			candidate := remoteAddr[:i]
+			// IPv6 addresses wrapped in brackets, e.g. [::1]:1234
+			if len(candidate) >= 2 && candidate[0] == '[' && candidate[len(candidate)-1] == ']' {
+				return candidate[1 : len(candidate)-1]
+			}
+			// Plain IPv4 or IPv6 without brackets
+			return candidate
+		}
+	}
+	return remoteAddr
+}
+
+// RealIPFromRequest extracts the true client IP, honouring X-Real-IP / X-Forwarded-For
+// if the connection comes from localhost (i.e. behind a trusted reverse proxy).
+func RealIPFromRequest(r *http.Request) string {
+	remoteIP := ExtractIP(r.RemoteAddr)
+	// Only trust proxy headers if the immediate connection is from loopback
+	if remoteIP == "127.0.0.1" || remoteIP == "::1" {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// Take the first (leftmost) IP
+			for _, part := range splitCSV(xff) {
+				if ip := trimSpace(part); ip != "" {
+					return ip
+				}
+			}
+		}
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			return trimSpace(xri)
+		}
+	}
+	return remoteIP
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == ',' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(out, s[start:])
+}
+
+func trimSpace(s string) string {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	j := len(s)
+	for j > i && (s[j-1] == ' ' || s[j-1] == '\t') {
+		j--
+	}
+	return s[i:j]
 }

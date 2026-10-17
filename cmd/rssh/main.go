@@ -238,11 +238,33 @@ func newBlockedCmd() *cobra.Command {
 	}
 }
 
+// safeID returns at most 8 characters from an ID without panicking on short strings.
+func safeID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// sanitizeForTerminal strips control characters from externally-supplied strings
+// before they are printed or broadcast to terminals, preventing escape injection.
+func sanitizeForTerminal(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		// Allow printable ASCII, space, tab, newline; strip everything else
+		if (b >= 0x20 && b < 0x7F) || b == '\t' || b == '\n' || b >= 0x80 {
+			out = append(out, b)
+		}
+	}
+	return string(out)
+}
+
 func runHost(hostID, pin, serverURL string) {
 	fmt.Printf("\n🐎⚡ Rakhssh is ready!\n")
 	fmt.Printf("   ├── Machine ID : %s\n", hostID)
 	fmt.Printf("   ├── Secret PIN : %s\n", pin)
-	fmt.Printf("   └── Stealth    : Active (WSS/443 + P2P Standby)\n\n")
+	fmt.Printf("   └── Server     : %s\n\n", serverURL)
 	fmt.Println("Waiting for rider...")
 
 	auditLogger := audit.NewLogger("")
@@ -284,40 +306,51 @@ func runHost(hostID, pin, serverURL string) {
 		nil, nil, nil, nil,
 	)
 	sigClient.SetTerminationHandler(func(sid, reason string) {
-		fmt.Printf("[-] Session %s terminated by server: %s\n", sid[:8], reason)
-		daemon.BroadcastSecurityNotice(fmt.Sprintf("Session %s terminated by server: %s", sid[:8], reason))
-		_ = auditLogger.Log(audit.EventSessionDisconnected, sid[:8], sid, "", fmt.Sprintf("Server terminated: %s", reason))
+		safeReason := sanitizeForTerminal(reason)
+		fmt.Printf("[-] Session %s terminated by server: %s\n", safeID(sid), safeReason)
+		daemon.BroadcastSecurityNotice(fmt.Sprintf("Session %s terminated by server: %s", safeID(sid), safeReason))
+		_ = auditLogger.Log(audit.EventSessionDisconnected, safeID(sid), sid, "", fmt.Sprintf("Server terminated: %s", safeReason))
+		// The server has closed the session; also close the signaling connection
+		_ = sigClient.Close()
 	})
 
 	// Keep alive loop handling incoming sessions
 	for sessionID := range sessionCh {
-		fmt.Printf("[+] Incoming rider connection (Session: %s)\n", sessionID[:8])
-		daemon.BroadcastSecurityNotice(fmt.Sprintf("Incoming rider connection for Session %s", sessionID[:8]))
+		sid8 := safeID(sessionID)
+		fmt.Printf("[+] Incoming rider connection (Session: %s)\n", sid8)
+		daemon.BroadcastSecurityNotice(fmt.Sprintf("Incoming rider connection for Session %s", sid8))
 
-		if blocklist.IsBlocked(sessionID[:8]) {
-			fmt.Printf("[-] Rejected connection from blocked client %s\n", sessionID[:8])
-			daemon.BroadcastSecurityNotice(fmt.Sprintf("Rejected connection from blocked client %s", sessionID[:8]))
-			_ = auditLogger.Log(audit.EventSessionRejected, sessionID[:8], sessionID, "", "Client on permanent blocklist")
+		if blocklist.IsBlocked(sid8) {
+			fmt.Printf("[-] Rejected connection from blocked client %s\n", sid8)
+			daemon.BroadcastSecurityNotice(fmt.Sprintf("Rejected connection from blocked client %s", sid8))
+			_ = auditLogger.Log(audit.EventSessionRejected, sid8, sessionID, "", "Client on permanent blocklist")
 			continue
 		}
 
 		go func(sid string) {
+			// Recover from any panic in the handshake (e.g. malformed PAKE payload)
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[-] Panic recovered in session %s handler: %v\n", safeID(sid), r)
+				}
+			}()
+
 			session, err := transport.OrchestrateHost(ctx, sigClient, sid, pin, time.Duration(flagP2PTimeout)*time.Second)
 			if err != nil {
-				fmt.Printf("[-] Handshake failed for session %s: %v\n", sid[:8], err)
-				daemon.BroadcastSecurityNotice(fmt.Sprintf("Handshake failed for Session %s: %v", sid[:8], err))
-				_ = auditLogger.Log(audit.EventSessionRejected, sid[:8], sid, "", fmt.Sprintf("Handshake error: %v", err))
+				fmt.Printf("[-] Handshake failed for session %s: %v\n", safeID(sid), err)
+				daemon.BroadcastSecurityNotice(fmt.Sprintf("Handshake failed for Session %s", safeID(sid)))
+				_ = auditLogger.Log(audit.EventSessionRejected, safeID(sid), sid, "", fmt.Sprintf("Handshake error: %v", err))
 				return
 			}
 			defer session.Close()
 
 			session.SetSessionTimeouts(30*time.Minute, 2*time.Hour)
-			_ = auditLogger.Log(audit.EventSessionConnected, sid[:8], sid, string(session.Type), "Authenticated via PAKE")
-			daemon.BroadcastSecurityNotice(fmt.Sprintf("Remote rider authenticated for Session %s via %s", sid[:8], session.Type))
+			_ = auditLogger.Log(audit.EventSessionConnected, safeID(sid), sid, string(session.Type), "Authenticated via PAKE + key-confirmation")
+			daemon.BroadcastSecurityNotice(fmt.Sprintf("Remote rider authenticated for Session %s via %s", safeID(sid), session.Type))
 
 			defer func() {
-				_ = auditLogger.Log(audit.EventSessionDisconnected, sid[:8], sid, string(session.Type), "Session closed cleanly")
-				daemon.BroadcastSecurityNotice(fmt.Sprintf("Rider disconnected from Session %s", sid[:8]))
+				_ = auditLogger.Log(audit.EventSessionDisconnected, safeID(sid), sid, string(session.Type), "Session closed cleanly")
+				daemon.BroadcastSecurityNotice(fmt.Sprintf("Rider disconnected from Session %s", safeID(sid)))
 			}()
 
 			fmt.Printf("✔ Connected to rider via %s\n", session.Type)
@@ -329,7 +362,7 @@ func runHost(hostID, pin, serverURL string) {
 				}
 
 				go func(st net.Conn) {
-					// Read 1-byte channel type
+					// Read 1-byte channel type header
 					typeBuf := make([]byte, 1)
 					if _, err := io.ReadFull(st, typeBuf); err != nil {
 						_ = st.Close()
@@ -342,18 +375,24 @@ func runHost(hostID, pin, serverURL string) {
 					case tunnel.StreamTypePTY:
 						_ = ptySess.Attach(st)
 					case tunnel.StreamTypeDirect:
-						// Handle forwarded port stream
-						_ = tunnel.HandleIncomingStream(st)
+						// Fix: the type byte was already consumed above, so we pass the stream
+						// directly to HandleDirectStream which reads the remaining sub-header,
+						// NOT HandleIncomingStream which would attempt to read the type byte again.
+						_ = tunnel.HandleDirectStream(st)
 					case tunnel.StreamTypeChat:
+						// Chat runs on a private pipe, NOT on os.Stdin/os.Stdout.
+						// This prevents a remote client from reading the operator's keystrokes.
+						chatIn, chatOut := io.Pipe()
 						go func() {
-							_ = chat.RunChat(st, "Host", sid[:8], os.Stdin, os.Stdout)
+							_ = chat.RunChat(st, "Host", safeID(sid), chatIn, os.Stderr)
+							_ = chatOut.Close()
 						}()
 					default:
 						_ = st.Close()
 					}
 				}(stream)
 			}
-			fmt.Printf("[-] Rider disconnected (Session: %s)\n", sid[:8])
+			fmt.Printf("[-] Rider disconnected (Session: %s)\n", safeID(sid))
 		}(sessionID)
 	}
 }

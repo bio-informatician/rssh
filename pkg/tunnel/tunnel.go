@@ -131,7 +131,9 @@ func (m *TunnelManager) handleLocalConn(conn net.Conn, targetHost string, target
 	pipeConns(conn, stream)
 }
 
-// HandleIncomingStream routes an incoming yamux stream on the host side
+// HandleIncomingStream routes an incoming yamux stream on the host side.
+// It reads the 1-byte stream-type prefix itself; use HandleDirectStream if the
+// caller has already consumed the type byte.
 func HandleIncomingStream(stream net.Conn) error {
 	defer stream.Close()
 
@@ -142,34 +144,42 @@ func HandleIncomingStream(stream net.Conn) error {
 
 	switch typeBuf[0] {
 	case StreamTypeDirect:
-		lenBuf := make([]byte, 1)
-		if _, err := io.ReadFull(stream, lenBuf); err != nil {
-			return err
-		}
-		hostLen := int(lenBuf[0])
-		hostBuf := make([]byte, hostLen)
-		if _, err := io.ReadFull(stream, hostBuf); err != nil {
-			return err
-		}
-		portBuf := make([]byte, 2)
-		if _, err := io.ReadFull(stream, portBuf); err != nil {
-			return err
-		}
-		port := binary.BigEndian.Uint16(portBuf)
-
-		targetAddr := fmt.Sprintf("%s:%d", string(hostBuf), port)
-		targetConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
-		if err != nil {
-			return err
-		}
-		defer targetConn.Close()
-
-		pipeConns(stream, targetConn)
-		return nil
-
+		return HandleDirectStream(stream)
 	default:
 		return fmt.Errorf("unsupported stream type: %d", typeBuf[0])
 	}
+}
+
+// HandleDirectStream handles the body of a StreamTypeDirect forwarding stream.
+// The type byte has already been consumed by the caller; this function reads
+// the host-length, host, and port sub-header, then proxies traffic.
+func HandleDirectStream(stream net.Conn) error {
+	defer stream.Close()
+
+	lenBuf := make([]byte, 1)
+	if _, err := io.ReadFull(stream, lenBuf); err != nil {
+		return err
+	}
+	hostLen := int(lenBuf[0])
+	hostBuf := make([]byte, hostLen)
+	if _, err := io.ReadFull(stream, hostBuf); err != nil {
+		return err
+	}
+	portBuf := make([]byte, 2)
+	if _, err := io.ReadFull(stream, portBuf); err != nil {
+		return err
+	}
+	port := binary.BigEndian.Uint16(portBuf)
+
+	targetAddr := fmt.Sprintf("%s:%d", string(hostBuf), port)
+	targetConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer targetConn.Close()
+
+	pipeConns(stream, targetConn)
+	return nil
 }
 
 // StartSOCKS5Proxy starts a local SOCKS5 proxy server that tunnels traffic through the remote host

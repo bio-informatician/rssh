@@ -2,7 +2,9 @@ package crypto
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -77,6 +79,23 @@ func VerifyAuthTag(verificationKey []byte, message []byte, expectedTag []byte) b
 	return hmac.Equal(actual, expectedTag)
 }
 
+// validatePAKEMsg validates that an incoming PAKE message is a non-empty valid JSON object
+// before passing it to pake.Update, preventing nil-pointer panics from malformed payloads.
+func validatePAKEMsg(msg []byte) error {
+	if len(msg) == 0 {
+		return errors.New("empty PAKE message")
+	}
+	var raw json.RawMessage
+	if err := json.Unmarshal(msg, &raw); err != nil {
+		return fmt.Errorf("PAKE message is not valid JSON: %w", err)
+	}
+	// Must be a JSON object, not null, array, or scalar
+	if len(raw) == 0 || raw[0] != '{' {
+		return errors.New("PAKE message must be a JSON object")
+	}
+	return nil
+}
+
 // StartHostPAKE initializes the Host PAKE exchange and returns the first message to send to the client
 func StartHostPAKE(pin string) (*PAKEHost, []byte, error) {
 	p, err := pake.InitCurve([]byte(pin), roleHost, defaultCurve)
@@ -86,8 +105,13 @@ func StartHostPAKE(pin string) (*PAKEHost, []byte, error) {
 	return &PAKEHost{pakeSession: p}, p.Bytes(), nil
 }
 
-// RespondClientPAKE takes the host's initial message, computes the client's response message, and derives the session keys
+// RespondClientPAKE takes the host's initial message, computes the client's response message,
+// and derives the session keys. It validates the message before calling Update to prevent panics.
 func RespondClientPAKE(pin string, hostMsg []byte) (clientMsg []byte, keys *SessionKeys, err error) {
+	if err := validatePAKEMsg(hostMsg); err != nil {
+		return nil, nil, fmt.Errorf("invalid host PAKE message: %w", err)
+	}
+
 	p, err := pake.InitCurve([]byte(pin), roleClient, defaultCurve)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to init client pake: %w", err)
@@ -110,8 +134,13 @@ func RespondClientPAKE(pin string, hostMsg []byte) (clientMsg []byte, keys *Sess
 	return p.Bytes(), keys, nil
 }
 
-// FinishHostPAKE finishes the host PAKE exchange with the client's response and derives the session keys
+// FinishHostPAKE finishes the host PAKE exchange with the client's response and derives the session keys.
+// It validates the message before calling Update to prevent panics.
 func (h *PAKEHost) FinishHostPAKE(clientMsg []byte) (*SessionKeys, error) {
+	if err := validatePAKEMsg(clientMsg); err != nil {
+		return nil, fmt.Errorf("invalid client PAKE message: %w", err)
+	}
+
 	if err := h.pakeSession.Update(clientMsg); err != nil {
 		return nil, fmt.Errorf("failed host update: %w", err)
 	}
@@ -122,4 +151,28 @@ func (h *PAKEHost) FinishHostPAKE(clientMsg []byte) (*SessionKeys, error) {
 	}
 
 	return DeriveKeys(rawKey)
+}
+
+// ConfirmationNonceLen is the length of the per-session key-confirmation nonce.
+const ConfirmationNonceLen = 16
+
+// BuildConfirmationTag generates the HMAC key-confirmation tag that proves both peers
+// derived the same session key from the same PIN.
+// The tag is: HMAC-SHA256(verificationKey, "rssh-confirm" || direction || nonce)
+// direction must be either "host" or "client".
+func BuildConfirmationTag(verificationKey []byte, direction string, nonce []byte) []byte {
+	mac := hmac.New(sha256.New, verificationKey)
+	mac.Write([]byte("rssh-confirm"))
+	mac.Write([]byte(direction))
+	mac.Write(nonce)
+	return mac.Sum(nil)
+}
+
+// GenerateConfirmationNonce returns a fresh random nonce for key confirmation.
+func GenerateConfirmationNonce() ([]byte, error) {
+	b := make([]byte, ConfirmationNonceLen)
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
