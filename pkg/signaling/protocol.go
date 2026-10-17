@@ -14,6 +14,9 @@ const (
 	TypePing       = "ping"
 	TypePong       = "pong"
 	TypeClose      = "close"
+	TypeTerminate  = "terminate"
+
+	ErrHostBusy = "host is busy with another active session"
 )
 
 // Message is the standard JSON packet exchanged over WebSocket

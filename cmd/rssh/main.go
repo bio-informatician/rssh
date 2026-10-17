@@ -222,6 +222,9 @@ func runHost(hostID, pin, serverURL string) {
 		},
 		nil, nil, nil, nil,
 	)
+	sigClient.SetTerminationHandler(func(sid, reason string) {
+		fmt.Printf("[-] Session %s terminated by server: %s\n", sid[:8], reason)
+	})
 
 	// Keep alive loop handling incoming sessions
 	for sessionID := range sessionCh {
@@ -306,6 +309,11 @@ func runConnect(targetID string) {
 		log.Fatalf("PAKE Handshake failed: %v", err)
 	}
 	defer session.Close()
+
+	sigClient.SetTerminationHandler(func(sid, reason string) {
+		fmt.Fprintf(os.Stderr, "\n[-] Session terminated by server: %s\n", reason)
+		_ = session.Close()
+	})
 
 	fmt.Fprintf(os.Stderr, "✔ PAKE Handshake verified (Zero-Knowledge E2EE)\n")
 	fmt.Fprintf(os.Stderr, "✔ Connected via %s\n\n", session.Type)

@@ -20,12 +20,13 @@ type Client struct {
 	conn    *websocket.Conn
 	writeMu sync.Mutex
 
-	onIncoming func(sessionID string)
-	onPAKE     func(sessionID, data string)
-	onSignal   func(sessionID, data string)
-	onRelay    func(sessionID, data string)
-	onClose    func(sessionID string)
-	onError    func(err error)
+	onIncoming  func(sessionID string)
+	onPAKE      func(sessionID, data string)
+	onSignal    func(sessionID, data string)
+	onRelay     func(sessionID, data string)
+	onClose     func(sessionID string)
+	onTerminate func(sessionID, reason string)
+	onError     func(err error)
 
 	registerChan map[string]chan error
 	connectChan  chan string
@@ -77,6 +78,12 @@ func (c *Client) SetHandlers(
 	c.onClose = onClose
 }
 
+func (c *Client) SetTerminationHandler(handler func(sessionID, reason string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onTerminate = handler
+}
+
 func (c *Client) readPump() {
 	defer func() {
 		_ = c.Close()
@@ -98,7 +105,7 @@ func (c *Client) readPump() {
 }
 
 func (c *Client) pingPump() {
-	ticker := time.NewTicker(20 * time.Second)
+	ticker := time.NewTicker(30 * time.Second) // 30-second heartbeat
 	defer ticker.Stop()
 
 	for {
@@ -151,6 +158,11 @@ func (c *Client) dispatchMessage(msg *Message) {
 	case TypeClose:
 		if c.onClose != nil {
 			go c.onClose(msg.SessionID)
+		}
+
+	case TypeTerminate:
+		if c.onTerminate != nil {
+			go c.onTerminate(msg.SessionID, msg.Error)
 		}
 
 	case TypeError:

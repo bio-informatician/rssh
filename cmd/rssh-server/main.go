@@ -18,9 +18,12 @@ func main() {
 	addr := flag.String("addr", ":8443", "Server listen address (e.g. :8443 or :443)")
 	certFile := flag.String("cert", "", "Path to TLS certificate file")
 	keyFile := flag.String("key", "", "Path to TLS private key file")
+	idleTimeout := flag.Duration("idle-timeout", 30*time.Minute, "Session idle timeout (e.g. 30m)")
+	maxDuration := flag.Duration("max-duration", 2*time.Hour, "Maximum absolute session duration (e.g. 2h)")
 	flag.Parse()
 
-	server := signaling.NewServer()
+	server := signaling.NewServerWithOptions(*idleTimeout, *maxDuration)
+	defer server.Close()
 
 	httpServer := &http.Server{
 		Addr:         *addr,

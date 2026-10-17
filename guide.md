@@ -245,3 +245,24 @@ go test -v -count=1 ./test/...
 # Run all tests in the entire project
 go test -v -count=1 ./...
 ```
+
+---
+
+## 6. Server-Enforced Control, Timeouts & Concurrency
+
+### 1. Persistent Control Channel & Heartbeats
+Both Host and Client maintain an active WebSocket signaling connection with `rssh-server` even while P2P data channels are flowing.
+- **Heartbeat**: 30-second ping/pong frames prevent NAT bindings from dropping.
+- **Remote Termination**: If the server revokes a session (due to idle timeout, duration limit, or admin action), it sends a JSON `{"type": "terminate", "session_id": "...", "error": "..."}` message. Both peers immediately abort their local sockets and PTY processes.
+
+### 2. Session Timeouts
+- **Idle Timeout**: Set via `--idle-timeout` on `rssh-server` (default `30m`). If no frames/signals are passed within this duration, the session is terminated.
+- **Max Duration Limit**: Set via `--max-duration` on `rssh-server` (default `2h`). Hard ceiling terminating connections regardless of active traffic.
+
+### 3. Single-Session Lock (Preventing Dual Connections)
+A Host ID can only be bound to **one active session** at a time:
+- When a client connects, the server marks the Host ID as `BUSY`.
+- Any subsequent client attempting to dial the same Host ID while busy is immediately rejected with:
+  `{"type": "error", "error": "host is busy with another active session"}`.
+- The lock is atomically released as soon as the session closes or terminates.
+
