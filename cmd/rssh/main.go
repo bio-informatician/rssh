@@ -16,6 +16,7 @@ import (
 	"golang.org/x/term"
 
 	"rssh/pkg/audit"
+	"rssh/pkg/chat"
 	"rssh/pkg/daemon"
 	"rssh/pkg/id"
 	"rssh/pkg/pty"
@@ -77,6 +78,7 @@ and pseudo-terminal ecosystem tool operating behind strict NATs and firewalls.`,
 	rootCmd.AddCommand(newBlockCmd())
 	rootCmd.AddCommand(newUnblockCmd())
 	rootCmd.AddCommand(newBlockedCmd())
+	rootCmd.AddCommand(newChatCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -342,6 +344,10 @@ func runHost(hostID, pin, serverURL string) {
 					case tunnel.StreamTypeDirect:
 						// Handle forwarded port stream
 						_ = tunnel.HandleIncomingStream(st)
+					case tunnel.StreamTypeChat:
+						go func() {
+							_ = chat.RunChat(st, "Host", sid[:8], os.Stdin, os.Stdout)
+						}()
 					default:
 						_ = st.Close()
 					}
@@ -574,4 +580,162 @@ func runForward(targetID string) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
+}
+
+func newChatCmd() *cobra.Command {
+	var hostID string
+	cmd := &cobra.Command{
+		Use:   "chat [target-id]",
+		Short: "Start an ephemeral end-to-end encrypted chat session",
+		Long: `Start an ephemeral, encrypted peer-to-peer chat session.
+If target-id is omitted, starts a chat host and displays a room ID + PIN.
+All messages exist solely in memory and are wiped when the session closes.`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			if len(args) == 1 {
+				runChatClient(args[0])
+			} else {
+				runChatHost(hostID)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&hostID, "id", "", "Custom 9-digit host ID")
+	return cmd
+}
+
+func runChatClient(targetID string) {
+	normID, err := id.NormalizeID(targetID)
+	if err != nil {
+		log.Fatalf("invalid ID: %v", err)
+	}
+
+	pin := flagPIN
+	if pin == "" {
+		pin = os.Getenv("RSSH_PIN")
+	}
+	if pin == "" {
+		fmt.Fprint(os.Stderr, "🔑 Enter PIN/Password: ")
+		bytePin, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			log.Fatalf("failed to read password: %v", err)
+		}
+		pin = strings.TrimSpace(string(bytePin))
+	}
+
+	sigClient, err := signaling.Dial(flagServer)
+	if err != nil {
+		log.Fatalf("signaling dial failed: %v", err)
+	}
+	defer sigClient.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	fmt.Fprintf(os.Stderr, "⚡ Dialing %s for secure chat...\n", normID)
+	sessionID, err := sigClient.ConnectTarget(ctx, normID)
+	if err != nil {
+		log.Fatalf("connect failed: %v", err)
+	}
+
+	session, err := transport.OrchestrateClient(ctx, sigClient, sessionID, pin, time.Duration(flagP2PTimeout)*time.Second)
+	if err != nil {
+		log.Fatalf("PAKE Handshake failed: %v", err)
+	}
+	defer session.Close()
+
+	sigClient.SetTerminationHandler(func(sid, reason string) {
+		fmt.Fprintf(os.Stderr, "\n%s[-] Session terminated by server: %s%s\n", chat.ColorRed, reason, chat.ColorReset)
+		_ = session.Close()
+	})
+
+	stream, err := session.OpenStream(ctx)
+	if err != nil {
+		log.Fatalf("failed to open chat stream: %v", err)
+	}
+	defer stream.Close()
+
+	if _, err := stream.Write([]byte{tunnel.StreamTypeChat}); err != nil {
+		log.Fatalf("failed to write stream header: %v", err)
+	}
+
+	_ = chat.RunChat(stream, "Client", normID, os.Stdin, os.Stdout)
+}
+
+func runChatHost(hostID string) {
+	if hostID == "" {
+		ident, err := id.LoadOrCreateIdentity("")
+		if err == nil {
+			hostID = ident.ID
+		} else {
+			generated, err := id.GenerateRandomID()
+			if err != nil {
+				log.Fatalf("failed to generate ID: %v", err)
+			}
+			hostID = generated
+		}
+	}
+	pin := flagPIN
+	if pin == "" {
+		generatedPIN, err := id.GeneratePIN(4)
+		if err != nil {
+			log.Fatalf("failed to generate PIN: %v", err)
+		}
+		pin = generatedPIN
+	}
+
+	fmt.Printf("\n🐎⚡ Rakhssh Secure Chat is ready!\n")
+	fmt.Printf("   ├── Chat Room ID : %s\n", hostID)
+	fmt.Printf("   ├── Secret PIN   : %s\n", pin)
+	fmt.Printf("   └── Storage      : Ephemeral (Zero Disk Persistence)\n\n")
+	fmt.Println("Waiting for peer to join...")
+
+	sigClient, err := signaling.Dial(flagServer)
+	if err != nil {
+		log.Fatalf("signaling dial failed: %v", err)
+	}
+	defer sigClient.Close()
+
+	ctx := context.Background()
+	if err := sigClient.RegisterHost(ctx, hostID); err != nil {
+		log.Fatalf("registration failed: %v", err)
+	}
+
+	sessionCh := make(chan string, 1)
+	sigClient.SetHandlers(
+		func(sessionID string) {
+			select {
+			case sessionCh <- sessionID:
+			default:
+			}
+		},
+		nil, nil, nil, nil,
+	)
+
+	sessionID := <-sessionCh
+	fmt.Printf("[+] Peer connected (Session: %s), performing Zero-Knowledge PAKE...\n", sessionID[:8])
+
+	session, err := transport.OrchestrateHost(ctx, sigClient, sessionID, pin, time.Duration(flagP2PTimeout)*time.Second)
+	if err != nil {
+		log.Fatalf("PAKE Handshake failed: %v", err)
+	}
+	defer session.Close()
+
+	sigClient.SetTerminationHandler(func(sid, reason string) {
+		fmt.Fprintf(os.Stderr, "\n%s[-] Session terminated by server: %s%s\n", chat.ColorRed, reason, chat.ColorReset)
+		_ = session.Close()
+	})
+
+	stream, err := session.AcceptStream()
+	if err != nil {
+		log.Fatalf("failed to accept chat stream: %v", err)
+	}
+	defer stream.Close()
+
+	typeBuf := make([]byte, 1)
+	if _, err := io.ReadFull(stream, typeBuf); err != nil {
+		log.Fatalf("failed to read stream header: %v", err)
+	}
+
+	_ = chat.RunChat(stream, "Host", sessionID[:8], os.Stdin, os.Stdout)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"rssh/pkg/crypto"
@@ -108,12 +109,15 @@ func OrchestrateHost(ctx context.Context, sigClient *signaling.Client, sessionID
 		dcConn, err := p2pPeer.WaitReady(p2pCtx)
 		if err == nil && dcConn != nil {
 			probeBuf := make([]byte, 14)
-			_ = dcConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-			n, readErr := dcConn.Read(probeBuf)
-			_ = dcConn.SetReadDeadline(time.Time{})
+			_ = dcConn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+			n, readErr := io.ReadFull(dcConn, probeBuf)
 			if readErr == nil && string(probeBuf[:n]) == "RSSH_P2P_SYNC\n" {
-				return NewSession(dcConn, keys, true, TransportTypeP2P)
+				if _, ackErr := dcConn.Write([]byte("RSSH_P2P_ACK\n")); ackErr == nil {
+					_ = dcConn.SetDeadline(time.Time{})
+					return NewSession(dcConn, keys, true, TransportTypeP2P)
+				}
 			}
+			_ = dcConn.SetDeadline(time.Time{})
 			_ = dcConn.Close()
 		}
 	}
@@ -212,9 +216,16 @@ func OrchestrateClient(ctx context.Context, sigClient *signaling.Client, session
 
 		dcConn, err := p2pPeer.WaitReady(p2pCtx)
 		if err == nil && dcConn != nil {
+			_ = dcConn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 			if _, writeErr := dcConn.Write([]byte("RSSH_P2P_SYNC\n")); writeErr == nil {
-				return NewSession(dcConn, keys, false, TransportTypeP2P)
+				ackBuf := make([]byte, 13)
+				n, readErr := io.ReadFull(dcConn, ackBuf)
+				if readErr == nil && string(ackBuf[:n]) == "RSSH_P2P_ACK\n" {
+					_ = dcConn.SetDeadline(time.Time{})
+					return NewSession(dcConn, keys, false, TransportTypeP2P)
+				}
 			}
+			_ = dcConn.SetDeadline(time.Time{})
 			_ = dcConn.Close()
 		}
 	}

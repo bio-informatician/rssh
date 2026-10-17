@@ -18,6 +18,7 @@ const (
 	StreamTypeSOCKS5 = byte(0x02) // SOCKS5 dynamic forward
 	StreamTypeSSH    = byte(0x03) // SSH ProxyCommand stream
 	StreamTypePTY    = byte(0x04) // Direct interactive PTY
+	StreamTypeChat   = byte(0x05) // Ephemeral end-to-end encrypted chat
 )
 
 // ForwardSpec represents a parsed port forwarding rule
