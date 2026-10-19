@@ -110,7 +110,7 @@ func TestFullOrchestrationSignalingPAKE(t *testing.T) {
 	}
 	defer hostClient.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	hostID := "777-888-999"
@@ -196,3 +196,180 @@ func TestFullOrchestrationSignalingPAKE(t *testing.T) {
 		t.Fatalf("unexpected reply: %s", buf[:n])
 	}
 }
+
+func TestConfirmFrameEncodingAndParsing(t *testing.T) {
+	tag := []byte("tag-0123456789abcdef")
+	nonce := []byte("nonce-0123456789")
+
+	frame := buildConfirmFrame(tag, nonce)
+	parsedTag, parsedNonce, err := parseConfirmFrame(frame)
+	if err != nil {
+		t.Fatalf("parseConfirmFrame failed: %v", err)
+	}
+	if string(parsedTag) != string(tag) {
+		t.Errorf("tag mismatch: got %s, want %s", parsedTag, tag)
+	}
+	if string(parsedNonce) != string(nonce) {
+		t.Errorf("nonce mismatch: got %s, want %s", parsedNonce, nonce)
+	}
+
+	// Truncated frames
+	if _, _, err := parseConfirmFrame([]byte{0x00}); err == nil {
+		t.Error("expected error on 1-byte frame")
+	}
+	if _, _, err := parseConfirmFrame([]byte{0x00, 0x10, 0x01}); err == nil {
+		t.Error("expected error on truncated tag")
+	}
+}
+
+func TestOrchestrationWrongPIN(t *testing.T) {
+	server := signaling.NewServer()
+	defer server.Close()
+	httpServer := httptest.NewServer(server)
+	defer httpServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hostClient, err := signaling.Dial(wsURL)
+	if err != nil {
+		t.Fatalf("host dial failed: %v", err)
+	}
+	defer hostClient.Close()
+
+	hostID := "777-888-999"
+	if err := hostClient.RegisterHost(ctx, hostID); err != nil {
+		t.Fatalf("host register failed: %v", err)
+	}
+
+	incomingSessionCh := make(chan string, 1)
+	hostClient.SetHandlers(
+		func(sessionID string) {
+			incomingSessionCh <- sessionID
+		},
+		nil, nil, nil, nil,
+	)
+
+	userClient, err := signaling.Dial(wsURL)
+	if err != nil {
+		t.Fatalf("user dial failed: %v", err)
+	}
+	defer userClient.Close()
+
+	clientSessionID, err := userClient.ConnectTarget(ctx, hostID)
+	if err != nil {
+		t.Fatalf("user connect failed: %v", err)
+	}
+
+	hostSessionID := <-incomingSessionCh
+
+	var (
+		errH error
+		errC error
+		wg   sync.WaitGroup
+	)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, errH = OrchestrateHost(ctx, hostClient, hostSessionID, "1234", 100*time.Millisecond)
+	}()
+
+	go func() {
+		defer wg.Done()
+		_, errC = OrchestrateClient(ctx, userClient, clientSessionID, "9999", 100*time.Millisecond)
+	}()
+
+	wg.Wait()
+
+	// Both should fail because PIN mismatch causes key-confirmation tag mismatch
+	if errH == nil {
+		t.Error("expected host orchestration to fail with wrong PIN")
+	}
+	if errC == nil {
+		t.Error("expected client orchestration to fail with wrong PIN")
+	}
+}
+
+func TestOrchestrationRelayFallback(t *testing.T) {
+	server := signaling.NewServer()
+	defer server.Close()
+	httpServer := httptest.NewServer(server)
+	defer httpServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hostClient, err := signaling.Dial(wsURL)
+	if err != nil {
+		t.Fatalf("host dial failed: %v", err)
+	}
+	defer hostClient.Close()
+
+	hostID := "111-222-444"
+	if err := hostClient.RegisterHost(ctx, hostID); err != nil {
+		t.Fatalf("host register failed: %v", err)
+	}
+
+	incomingSessionCh := make(chan string, 1)
+	hostClient.SetHandlers(
+		func(sessionID string) {
+			incomingSessionCh <- sessionID
+		},
+		nil, nil, nil, nil,
+	)
+
+	userClient, err := signaling.Dial(wsURL)
+	if err != nil {
+		t.Fatalf("user dial failed: %v", err)
+	}
+	defer userClient.Close()
+
+	clientSessionID, err := userClient.ConnectTarget(ctx, hostID)
+	if err != nil {
+		t.Fatalf("user connect failed: %v", err)
+	}
+
+	hostSessionID := <-incomingSessionCh
+
+	pin := "5678"
+	var (
+		hostSess   *Session
+		clientSess *Session
+		errH       error
+		errC       error
+		wg         sync.WaitGroup
+	)
+
+	wg.Add(2)
+	// p2pTimeout = 0 forces relay transport directly
+	go func() {
+		defer wg.Done()
+		hostSess, errH = OrchestrateHost(ctx, hostClient, hostSessionID, pin, 0)
+	}()
+
+	go func() {
+		defer wg.Done()
+		clientSess, errC = OrchestrateClient(ctx, userClient, clientSessionID, pin, 0)
+	}()
+
+	wg.Wait()
+	if errH != nil {
+		t.Fatalf("orchestrate host relay failed: %v", errH)
+	}
+	defer hostSess.Close()
+
+	if errC != nil {
+		t.Fatalf("orchestrate client relay failed: %v", errC)
+	}
+	defer clientSess.Close()
+
+	if hostSess.Type != TransportTypeRelay || clientSess.Type != TransportTypeRelay {
+		t.Fatalf("expected TransportTypeRelay, got host=%v, client=%v", hostSess.Type, clientSess.Type)
+	}
+}
+

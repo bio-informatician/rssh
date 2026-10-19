@@ -66,3 +66,22 @@ func TestBlocklist(t *testing.T) {
 		t.Fatal("client should be unblocked")
 	}
 }
+
+func TestBlocklistListAndComments(t *testing.T) {
+	tmpDir := t.TempDir()
+	blockPath := filepath.Join(tmpDir, "blocked_clients")
+
+	content := "# Comment line\n\n111-222-333\n# Another comment\n444-555-666\n"
+	if err := os.WriteFile(blockPath, []byte(content), 0600); err != nil {
+		t.Fatalf("failed to write test blocklist: %v", err)
+	}
+
+	b := NewBlocklist(blockPath)
+	list := b.List()
+	if len(list) != 2 {
+		t.Fatalf("expected 2 blocked clients, got %d: %v", len(list), list)
+	}
+	if !b.IsBlocked("111-222-333") || !b.IsBlocked("444-555-666") {
+		t.Error("expected loaded clients to be blocked")
+	}
+}

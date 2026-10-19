@@ -197,3 +197,33 @@ func TestPortForwardingAndSOCKS5(t *testing.T) {
 		t.Fatalf("expected 'PONG', got '%s'", socksEcho)
 	}
 }
+
+func TestHandleIncomingStreamUnsupported(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- HandleIncomingStream(c2)
+	}()
+
+	// Write unsupported stream type byte (e.g. 0xFF)
+	_, _ = c1.Write([]byte{0xFF})
+
+	err := <-errCh
+	if err == nil || !strings.Contains(err.Error(), "unsupported stream type") {
+		t.Fatalf("expected unsupported stream type error, got: %v", err)
+	}
+}
+
+func TestTunnelManagerClose(t *testing.T) {
+	mgr := NewTunnelManager(nil)
+	if err := mgr.Close(); err != nil {
+		t.Errorf("expected no error on first Close, got: %v", err)
+	}
+	// Idempotent close
+	if err := mgr.Close(); err != nil {
+		t.Errorf("expected no error on second Close, got: %v", err)
+	}
+}
+

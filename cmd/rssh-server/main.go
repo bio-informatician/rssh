@@ -22,15 +22,8 @@ func main() {
 	maxDuration := flag.Duration("max-duration", 2*time.Hour, "Maximum absolute session duration (e.g. 2h)")
 	flag.Parse()
 
-	server := signaling.NewServerWithOptions(*idleTimeout, *maxDuration)
+	server, httpServer := setupServer(*addr, *idleTimeout, *maxDuration)
 	defer server.Close()
-
-	httpServer := &http.Server{
-		Addr:         *addr,
-		Handler:      server,
-		ReadTimeout:  120 * time.Second,
-		WriteTimeout: 120 * time.Second,
-	}
 
 	go func() {
 		log.Printf("🐎⚡ Rakhssh Signaling & Relay Server listening on %s", *addr)
@@ -57,4 +50,15 @@ func main() {
 		fmt.Printf("Shutdown error: %v\n", err)
 	}
 	log.Println("Server stopped.")
+}
+
+func setupServer(addr string, idleTimeout, maxDuration time.Duration) (*signaling.Server, *http.Server) {
+	server := signaling.NewServerWithOptions(idleTimeout, maxDuration)
+	httpServer := &http.Server{
+		Addr:         addr,
+		Handler:      server,
+		ReadTimeout:  120 * time.Second,
+		WriteTimeout: 120 * time.Second,
+	}
+	return server, httpServer
 }

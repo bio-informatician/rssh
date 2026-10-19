@@ -43,6 +43,12 @@ func getDefaultServer() string {
 }
 
 func main() {
+	if err := newRootCmd().Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "rssh [command or host-id]",
 		Short: "🐎⚡ Rakhssh: Stealth P2P SSH & Terminal Sharing",
@@ -80,9 +86,7 @@ and pseudo-terminal ecosystem tool operating behind strict NATs and firewalls.`,
 	rootCmd.AddCommand(newBlockedCmd())
 	rootCmd.AddCommand(newChatCmd())
 
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
-	}
+	return rootCmd
 }
 
 func newHostCmd() *cobra.Command {

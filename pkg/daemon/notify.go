@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
+
 
 var notifyMu sync.Mutex
 
@@ -36,16 +38,17 @@ func BroadcastSecurityNotice(notice string) bool {
 	defer notifyMu.Unlock()
 
 	activeNotified := false
-	alertMsg := fmt.Sprintf("\r\n\a🔔 [Rakhssh Security Alert] %s\r\n", notice)
+	alertMsg := []byte(fmt.Sprintf("\r\n\a🔔 [Rakhssh Security Alert] %s\r\n", notice))
 
-	// Write to active pseudo-terminals (/dev/pts/*)
+	// Write to active pseudo-terminals (/dev/pts/*) using raw non-blocking syscalls
+	// to avoid Go netpoller runtime_pollWait hangs when a pts has no reader.
 	ptsList := ActivePTSDevices()
 	for _, ptsPath := range ptsList {
-		f, err := os.OpenFile(ptsPath, os.O_WRONLY, 0)
+		fd, err := syscall.Open(ptsPath, syscall.O_WRONLY|syscall.O_NONBLOCK, 0)
 		if err == nil {
-			_, writeErr := f.WriteString(alertMsg)
-			_ = f.Close()
-			if writeErr == nil {
+			n, writeErr := syscall.Write(fd, alertMsg)
+			_ = syscall.Close(fd)
+			if writeErr == nil && n > 0 {
 				activeNotified = true
 			}
 		}
@@ -60,7 +63,7 @@ func BroadcastSecurityNotice(notice string) bool {
 }
 
 // ActivePTSDevices returns paths of accessible pseudo-terminals (/dev/pts/*).
-// Only devices that can be opened for writing are returned.
+// Only devices that can be opened for writing in non-blocking mode are returned.
 func ActivePTSDevices() []string {
 	ptsDir := "/dev/pts"
 	entries, err := os.ReadDir(ptsDir)
@@ -75,8 +78,8 @@ func ActivePTSDevices() []string {
 			continue
 		}
 		ptsPath := filepath.Join(ptsDir, name)
-		if f, err := os.OpenFile(ptsPath, os.O_WRONLY, 0); err == nil {
-			_ = f.Close()
+		if fd, err := syscall.Open(ptsPath, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = syscall.Close(fd)
 			active = append(active, ptsPath)
 		}
 	}

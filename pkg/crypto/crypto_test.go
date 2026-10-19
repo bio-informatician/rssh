@@ -144,3 +144,101 @@ func TestSecureConnPipe(t *testing.T) {
 		t.Fatal("large data mismatch after transfer")
 	}
 }
+
+func TestValidatePAKEMsg(t *testing.T) {
+	// Empty message
+	if err := validatePAKEMsg(nil); err == nil {
+		t.Error("expected error on nil PAKE msg")
+	}
+	if err := validatePAKEMsg([]byte{}); err == nil {
+		t.Error("expected error on empty slice")
+	}
+
+	// Invalid JSON
+	if err := validatePAKEMsg([]byte("not-json")); err == nil {
+		t.Error("expected error on invalid JSON")
+	}
+
+	// JSON array or primitive instead of object
+	if err := validatePAKEMsg([]byte("[1, 2, 3]")); err == nil {
+		t.Error("expected error on JSON array")
+	}
+	if err := validatePAKEMsg([]byte("12345")); err == nil {
+		t.Error("expected error on JSON number")
+	}
+
+	// Valid JSON object
+	if err := validatePAKEMsg([]byte(`{"test": "val"}`)); err != nil {
+		t.Errorf("unexpected error on valid JSON object: %v", err)
+	}
+}
+
+func TestKeyConfirmationTags(t *testing.T) {
+	vKey1 := []byte("verification-key-1-0123456789012")
+	vKey2 := []byte("verification-key-2-0123456789012")
+
+	nonce, err := GenerateConfirmationNonce()
+	if err != nil {
+		t.Fatalf("GenerateConfirmationNonce failed: %v", err)
+	}
+	if len(nonce) != ConfirmationNonceLen {
+		t.Fatalf("unexpected nonce length: %d", len(nonce))
+	}
+
+	hostTag := BuildConfirmationTag(vKey1, "host", nonce)
+	clientTag := BuildConfirmationTag(vKey1, "client", nonce)
+
+	// Tags must be directional (host != client)
+	if bytes.Equal(hostTag, clientTag) {
+		t.Error("host and client confirmation tags should differ for directionality")
+	}
+
+	// Tags under different key must differ
+	differentKeyTag := BuildConfirmationTag(vKey2, "host", nonce)
+	if bytes.Equal(hostTag, differentKeyTag) {
+		t.Error("tags with different verification keys should differ")
+	}
+
+	// Tags with different nonce must differ
+	nonce2, _ := GenerateConfirmationNonce()
+	differentNonceTag := BuildConfirmationTag(vKey1, "host", nonce2)
+	if bytes.Equal(hostTag, differentNonceTag) {
+		t.Error("tags with different nonces should differ")
+	}
+}
+
+func TestSecureConnTamperAndOversize(t *testing.T) {
+	pipeClient, pipeHost := net.Pipe()
+	defer pipeClient.Close()
+	defer pipeHost.Close()
+
+	keys := &SessionKeys{
+		HostToClientKey: make([]byte, 32),
+		ClientToHostKey: make([]byte, 32),
+		VerificationKey: make([]byte, 32),
+	}
+
+	hostConn, err := NewSecureConn(pipeHost, keys, true)
+	if err != nil {
+		t.Fatalf("NewSecureConn failed: %v", err)
+	}
+	defer hostConn.Close()
+
+	// 1. Write an oversized frame header into the pipe to test safety threshold
+	go func() {
+		oversizedLen := make([]byte, 4)
+		// Send 100,000 bytes frame length (exceeds threshold)
+		oversizedLen[0] = 0x00
+		oversizedLen[1] = 0x01
+		oversizedLen[2] = 0x86
+		oversizedLen[3] = 0xa0
+		_, _ = pipeClient.Write(oversizedLen)
+	}()
+
+	buf := make([]byte, 128)
+	_, err = hostConn.Read(buf)
+	if err == nil {
+		t.Error("expected error on oversized frame length")
+	}
+}
+

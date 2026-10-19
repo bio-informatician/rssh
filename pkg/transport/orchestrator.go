@@ -133,10 +133,12 @@ func OrchestrateHost(ctx context.Context, sigClient *signaling.Client, sessionID
 		_ = sigClient.SendSignal(sessionID, signalJSON)
 	})
 
+	p2pSelected := false
 	if p2pPeer != nil {
 		defer func() {
-			// Always close the P2P peer after selection, regardless of which path was chosen
-			_ = p2pPeer.Close()
+			if !p2pSelected {
+				_ = p2pPeer.Close()
+			}
 		}()
 	}
 
@@ -166,6 +168,7 @@ func OrchestrateHost(ctx context.Context, sigClient *signaling.Client, sessionID
 			if readErr == nil && string(probeBuf[:n]) == "RSSH_P2P_SYNC\n" {
 				if _, ackErr := dcConn.Write([]byte("RSSH_P2P_ACK\n")); ackErr == nil {
 					_ = dcConn.SetDeadline(time.Time{})
+					p2pSelected = true
 					return NewSession(dcConn, keys, true, TransportTypeP2P)
 				}
 			}
@@ -280,9 +283,12 @@ func OrchestrateClient(ctx context.Context, sigClient *signaling.Client, session
 		_ = sigClient.SendSignal(sessionID, signalJSON)
 	})
 
+	p2pSelected := false
 	if p2pPeer != nil {
 		defer func() {
-			_ = p2pPeer.Close()
+			if !p2pSelected {
+				_ = p2pPeer.Close()
+			}
 		}()
 	}
 
@@ -313,6 +319,7 @@ func OrchestrateClient(ctx context.Context, sigClient *signaling.Client, session
 				n, readErr := io.ReadFull(dcConn, ackBuf)
 				if readErr == nil && string(ackBuf[:n]) == "RSSH_P2P_ACK\n" {
 					_ = dcConn.SetDeadline(time.Time{})
+					p2pSelected = true
 					return NewSession(dcConn, keys, false, TransportTypeP2P)
 				}
 			}
