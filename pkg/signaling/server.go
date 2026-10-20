@@ -21,9 +21,14 @@ const (
 	// maxConnections caps total concurrent WebSocket connections
 	maxConnections = 5000
 
+	// maxConnectionsPerIP caps concurrent WebSocket connections from a single IP
+	maxConnectionsPerIP = 50
+
 	// maxRegistrationsPerConn limits how many times a single connection may register.
-	// A well-behaved host registers once. Repeated registration attempts leak map entries.
 	maxRegistrationsPerConn = 1
+
+	// defaultHandshakeTimeout limits time allowed to complete PAKE handshake before dropping lock
+	defaultHandshakeTimeout = 60 * time.Second
 )
 
 var upgrader = websocket.Upgrader{
@@ -65,28 +70,32 @@ func (c *wsConn) Close() error {
 }
 
 type sessionPair struct {
-	id           string
-	hostID       string
-	host         *wsConn
-	client       *wsConn
-	createdAt    time.Time
-	lastActivity time.Time
-	mu           sync.Mutex
+	id                string
+	hostID            string
+	host              *wsConn
+	client            *wsConn
+	createdAt         time.Time
+	lastActivity      time.Time
+	handshakeComplete bool
+	mu                sync.Mutex
 }
 
 // Server coordinates signaling, concurrency control, timeouts, and fallback relaying
 type Server struct {
-	hosts       map[string]*wsConn
-	busyHosts   map[string]string // hostID -> sessionID (Single-session lock)
-	sessions    map[string]*sessionPair
-	rateLimiter *RateLimiter
-	idleTimeout time.Duration
-	maxDuration time.Duration
-	stopCh      chan struct{}
-	closeOnce   sync.Once
-	mu          sync.RWMutex
-	connCount   int
-	connMu      sync.Mutex
+	hosts            map[string]*wsConn
+	busyHosts        map[string]string // hostID -> sessionID (Single-session lock)
+	sessions         map[string]*sessionPair
+	rateLimiter      *RateLimiter // Connect rate limiter (30/min per IP)
+	registerLimiter  *RateLimiter // Registration rate limiter (15/min per IP)
+	idleTimeout      time.Duration
+	maxDuration      time.Duration
+	handshakeTimeout time.Duration
+	stopCh           chan struct{}
+	closeOnce        sync.Once
+	mu               sync.RWMutex
+	connCount        int
+	ipConnCount      map[string]int
+	connMu           sync.Mutex
 }
 
 // NewServer creates a new signaling and relay server instance
@@ -97,13 +106,16 @@ func NewServer() *Server {
 // NewServerWithOptions initializes server with custom idle and max duration timeouts
 func NewServerWithOptions(idleTimeout, maxDuration time.Duration) *Server {
 	s := &Server{
-		hosts:       make(map[string]*wsConn),
-		busyHosts:   make(map[string]string),
-		sessions:    make(map[string]*sessionPair),
-		rateLimiter: NewRateLimiter(30, 1*time.Minute), // 30 requests/min per IP
-		idleTimeout: idleTimeout,
-		maxDuration: maxDuration,
-		stopCh:      make(chan struct{}),
+		hosts:            make(map[string]*wsConn),
+		busyHosts:        make(map[string]string),
+		sessions:         make(map[string]*sessionPair),
+		rateLimiter:      NewRateLimiter(30, 1*time.Minute), // 30 requests/min per IP
+		registerLimiter:  NewRateLimiter(15, 1*time.Minute), // 15 registrations/min per IP
+		idleTimeout:      idleTimeout,
+		maxDuration:      maxDuration,
+		handshakeTimeout: defaultHandshakeTimeout,
+		stopCh:           make(chan struct{}),
+		ipConnCount:      make(map[string]int),
 	}
 	go s.monitorTimeouts()
 	return s
@@ -134,7 +146,12 @@ func (s *Server) monitorTimeouts() {
 			s.mu.RLock()
 			for id, pair := range s.sessions {
 				pair.mu.Lock()
-				if s.idleTimeout > 0 && now.Sub(pair.lastActivity) > s.idleTimeout {
+				if !pair.handshakeComplete && s.handshakeTimeout > 0 && now.Sub(pair.createdAt) > s.handshakeTimeout {
+					expired = append(expired, struct {
+						id     string
+						reason string
+					}{id: id, reason: fmt.Sprintf("handshake timeout exceeded (%v)", s.handshakeTimeout)})
+				} else if s.idleTimeout > 0 && now.Sub(pair.lastActivity) > s.idleTimeout {
 					expired = append(expired, struct {
 						id     string
 						reason string
@@ -158,8 +175,28 @@ func (s *Server) monitorTimeouts() {
 
 // ServeHTTP implements http.Handler for the signaling server
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Serve a stealth disguise page for non-WebSocket requests
+	// Serve metrics, health checks, or stealth disguise page for non-WebSocket requests
 	if r.Header.Get("Upgrade") != "websocket" {
+		if r.URL.Path == "/metrics" || r.URL.Path == "/health" {
+			s.mu.RLock()
+			activeSessions := len(s.sessions)
+			activeHosts := len(s.hosts)
+			s.mu.RUnlock()
+
+			s.connMu.Lock()
+			activeConns := s.connCount
+			s.connMu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":              "ok",
+				"active_connections": activeConns,
+				"active_hosts":       activeHosts,
+				"active_sessions":    activeSessions,
+			})
+			return
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<!DOCTYPE html>
@@ -173,14 +210,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce connection cap
+	remoteIP := RealIPFromRequest(r)
+
+	// Enforce global and per-IP connection limits
 	s.connMu.Lock()
 	if s.connCount >= maxConnections {
 		s.connMu.Unlock()
 		http.Error(w, "server at capacity", http.StatusServiceUnavailable)
 		return
 	}
+	if s.ipConnCount[remoteIP] >= maxConnectionsPerIP {
+		s.connMu.Unlock()
+		http.Error(w, "too many connections from this IP", http.StatusTooManyRequests)
+		return
+	}
 	s.connCount++
+	s.ipConnCount[remoteIP]++
 	s.connMu.Unlock()
 
 	ws, err := upgrader.Upgrade(w, r, nil)
@@ -188,6 +233,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[Signaling] WebSocket upgrade error: %v", err)
 		s.connMu.Lock()
 		s.connCount--
+		s.ipConnCount[remoteIP]--
+		if s.ipConnCount[remoteIP] <= 0 {
+			delete(s.ipConnCount, remoteIP)
+		}
 		s.connMu.Unlock()
 		return
 	}
@@ -196,13 +245,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	c := &wsConn{
 		conn:     ws,
-		remoteIP: RealIPFromRequest(r), // per-IP, not per-socket
+		remoteIP: remoteIP,
 	}
-	s.handleConnection(c)
 
-	s.connMu.Lock()
-	s.connCount--
-	s.connMu.Unlock()
+	defer func() {
+		s.connMu.Lock()
+		s.connCount--
+		s.ipConnCount[c.remoteIP]--
+		if s.ipConnCount[c.remoteIP] <= 0 {
+			delete(s.ipConnCount, c.remoteIP)
+		}
+		s.connMu.Unlock()
+	}()
+
+	s.handleConnection(c)
 }
 
 func (s *Server) handleConnection(c *wsConn) {
@@ -239,6 +295,14 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 		_ = c.WriteMessage(&Message{Type: TypePong})
 
 	case TypeRegister:
+		if s.registerLimiter != nil && !s.registerLimiter.Allow(c.remoteIP) {
+			_ = c.WriteMessage(&Message{
+				Type:  TypeError,
+				Error: "registration rate limit exceeded: please slow down",
+			})
+			return
+		}
+
 		// Prevent repeated registrations on the same connection leaking map entries
 		if c.registrations >= maxRegistrationsPerConn {
 			_ = c.WriteMessage(&Message{
@@ -359,8 +423,19 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 		var recipient *wsConn
 		if c == pair.client {
 			recipient = pair.host
-		} else {
+		} else if c == pair.host {
 			recipient = pair.client
+		} else {
+			pair.mu.Unlock()
+			_ = c.WriteMessage(&Message{
+				Type:      TypeError,
+				SessionID: msg.SessionID,
+				Error:     "unauthorized: not a participant in this session",
+			})
+			return
+		}
+		if msg.Type == TypeRelay {
+			pair.handshakeComplete = true
 		}
 		pair.mu.Unlock()
 
@@ -368,11 +443,34 @@ func (s *Server) handleMessage(c *wsConn, msg *Message) {
 			_ = recipient.WriteMessage(msg)
 		}
 
-	case TypeClose:
-		s.closeSession(msg.SessionID)
+	case TypeClose, TypeTerminate:
+		if len(msg.SessionID) < 8 {
+			return
+		}
+		s.mu.RLock()
+		pair, exists := s.sessions[msg.SessionID]
+		s.mu.RUnlock()
+		if !exists || pair == nil {
+			return
+		}
 
-	case TypeTerminate:
-		s.TerminateSession(msg.SessionID, "terminated by user request")
+		pair.mu.Lock()
+		isParticipant := (c == pair.client || c == pair.host)
+		pair.mu.Unlock()
+		if !isParticipant {
+			_ = c.WriteMessage(&Message{
+				Type:      TypeError,
+				SessionID: msg.SessionID,
+				Error:     "unauthorized: not a participant in this session",
+			})
+			return
+		}
+
+		if msg.Type == TypeClose {
+			s.closeSession(msg.SessionID)
+		} else {
+			s.TerminateSession(msg.SessionID, "terminated by session participant")
+		}
 	}
 }
 

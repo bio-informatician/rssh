@@ -5,9 +5,14 @@ set -euo pipefail
 
 VERSION="${RSSH_VERSION:-latest}"
 REPO="${RSSH_REPO:-shrm/rssh}"
-BASE_URL="https://github.com/${REPO}/releases/${VERSION}/download"
 
-# Determine target architecture
+if [[ "$VERSION" == "latest" ]]; then
+  BASE_URL="https://github.com/${REPO}/releases/latest/download"
+else
+  BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+fi
+
+# Detect architecture
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64|amd64) ARCH="amd64" ;;
@@ -31,7 +36,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   exit 0
 fi
 
-# Choose destination: prioritize user-local (~/.local/bin) to remain 100% rootless
+# Destination: user-local by default for 100% rootless security
 if [[ "${1:-}" == "--system" ]] || [[ "$EUID" -eq 0 ]]; then
   INSTALL_DIR="/usr/local/bin"
 else
@@ -44,33 +49,40 @@ BIN_NAME="rssh-linux-${ARCH}"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "🐎⚡ Installing Rakhssh (rssh) [linux/${ARCH}]..."
+echo "🐎⚡ Downloading Rakhssh (${VERSION}) [linux/${ARCH}]..."
 
-# Download binary
+# Download binary and checksum
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "${BASE_URL}/${BIN_NAME}" -o "${TMP_DIR}/rssh"
+  curl -fsSL "${BASE_URL}/${BIN_NAME}" -o "${TMP_DIR}/${BIN_NAME}"
+  echo "🔒 Downloading SHA-256 checksums..."
+  curl -fsSL "${BASE_URL}/checksums.txt" -o "${TMP_DIR}/checksums.txt" || {
+    echo "❌ Error: Mandatory checksums.txt could not be retrieved from release. Failing closed for security." >&2
+    exit 1
+  }
 elif command -v wget >/dev/null 2>&1; then
-  wget -qO "${TMP_DIR}/rssh" "${BASE_URL}/${BIN_NAME}"
+  wget -qO "${TMP_DIR}/${BIN_NAME}" "${BASE_URL}/${BIN_NAME}"
+  echo "🔒 Downloading SHA-256 checksums..."
+  wget -qO "${TMP_DIR}/checksums.txt" "${BASE_URL}/checksums.txt" || {
+    echo "❌ Error: Mandatory checksums.txt could not be retrieved from release. Failing closed for security." >&2
+    exit 1
+  }
 else
   echo "❌ Error: curl or wget is required to install Rakhssh." >&2
   exit 1
 fi
 
-# Optional checksum verification
-if curl -fsSL "${BASE_URL}/checksums.txt" -o "${TMP_DIR}/checksums.txt" 2>/dev/null; then
-  echo "🔒 Verifying SHA-256 checksum..."
-  (cd "$TMP_DIR" && grep "${BIN_NAME}" checksums.txt | sed "s/${BIN_NAME}/rssh/" | sha256sum -c -) || {
-    echo "❌ Error: Checksum verification failed!" >&2
-    exit 1
-  }
-fi
+# Mandatory checksum verification (fail-closed)
+echo "🔍 Verifying binary integrity against checksums.txt..."
+(cd "$TMP_DIR" && grep "${BIN_NAME}" checksums.txt | sha256sum -c -) || {
+  echo "❌ Error: Cryptographic checksum mismatch! Binary may be corrupt or tampered." >&2
+  exit 1
+}
 
-chmod +x "${TMP_DIR}/rssh"
-mv "${TMP_DIR}/rssh" "${INSTALL_DIR}/rssh"
+chmod +x "${TMP_DIR}/${BIN_NAME}"
+mv "${TMP_DIR}/${BIN_NAME}" "${INSTALL_DIR}/rssh"
 
 echo "✔ Successfully installed rssh to ${INSTALL_DIR}/rssh"
 
-# PATH check for user-level installation
 if [[ "$INSTALL_DIR" == "$HOME/.local/bin" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
   echo ""
   echo "⚠️  Notice: $HOME/.local/bin is not in your PATH."
@@ -81,4 +93,3 @@ fi
 echo ""
 echo "Try running:"
 echo "   rssh --help"
-echo "   rssh host"

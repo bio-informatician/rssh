@@ -7,9 +7,11 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,12 +30,13 @@ import (
 )
 
 var (
-	flagServer     string
-	flagPIN        string
-	flagLocalFwd   string
-	flagSocksPort  int
-	flagP2PTimeout int
-	flagDebug      bool
+	flagServer       string
+	flagPIN          string
+	flagPasswordFile string
+	flagLocalFwd     string
+	flagSocksPort    int
+	flagP2PTimeout   int
+	flagDebug        bool
 )
 
 func getDefaultServer() string {
@@ -41,6 +44,57 @@ func getDefaultServer() string {
 		return s
 	}
 	return "wss://relay.rakhssh.com"
+}
+
+func dialSignaling(serverURL string) (*signaling.Client, error) {
+	if err := validateServerURL(serverURL); err != nil {
+		return nil, err
+	}
+	return signaling.Dial(serverURL)
+}
+
+func validateServerURL(serverURL string) error {
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		return fmt.Errorf("invalid server URL %q: %w", serverURL, err)
+	}
+	if u.Scheme == "ws" {
+		h := u.Hostname()
+		if h != "localhost" && h != "127.0.0.1" && h != "::1" && os.Getenv("RSSH_ALLOW_INSECURE_WS") != "1" {
+			return fmt.Errorf("security error: unencrypted ws:// connection rejected for non-loopback host %q (use wss:// or set RSSH_ALLOW_INSECURE_WS=1 to override)", h)
+		}
+	}
+	return nil
+}
+
+func resolvePIN() string {
+	pin := flagPIN
+	if pin == "" && flagPasswordFile != "" {
+		if b, err := os.ReadFile(flagPasswordFile); err == nil {
+			pin = strings.TrimSpace(string(b))
+		}
+	}
+	if pin == "" {
+		pin = os.Getenv("RSSH_PIN")
+	}
+	if pin == "" {
+		pin = os.Getenv("RSSH_PASSWORD")
+	}
+	return pin
+}
+
+func promptPIN() string {
+	pin := resolvePIN()
+	if pin != "" {
+		return pin
+	}
+	fmt.Fprint(os.Stderr, "🔑 Enter PIN/Password: ")
+	bytePin, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		log.Fatalf("failed to read password: %v", err)
+	}
+	return strings.TrimSpace(string(bytePin))
 }
 
 func main() {
@@ -73,6 +127,7 @@ and pseudo-terminal ecosystem tool operating behind strict NATs and firewalls.`,
 
 	rootCmd.PersistentFlags().StringVarP(&flagServer, "server", "s", getDefaultServer(), "Signaling & relay server URL")
 	rootCmd.PersistentFlags().StringVarP(&flagPIN, "pin", "p", "", "PIN or password for authentication")
+	rootCmd.PersistentFlags().StringVar(&flagPasswordFile, "password-file", "", "Path to file containing password or PIN (avoids process listing exposure)")
 	rootCmd.PersistentFlags().IntVar(&flagP2PTimeout, "p2p-timeout", 2, "Seconds to attempt P2P before falling back to relay")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "v", false, "Enable verbose diagnostic tracing")
 
@@ -109,9 +164,9 @@ func newHostCmd() *cobra.Command {
 					hostID = generated
 				}
 			}
-			pin := flagPIN
+			pin := resolvePIN()
 			if pin == "" {
-				generatedPIN, err := id.GeneratePIN(4)
+				generatedPIN, err := id.GeneratePIN(6)
 				if err != nil {
 					log.Fatalf("failed to generate PIN: %v", err)
 				}
@@ -183,7 +238,8 @@ func newDaemonCmd() *cobra.Command {
 				return
 			}
 
-			cfg, err := daemon.LoadOrCreateConfig("", flagPIN, flagServer)
+			password := resolvePIN()
+			cfg, err := daemon.LoadOrCreateConfig("", password, flagServer)
 			if err != nil {
 				log.Fatalf("failed to load daemon config: %v", err)
 			}
@@ -266,9 +322,15 @@ func sanitizeForTerminal(s string) string {
 }
 
 func runHost(hostID, pin, serverURL string) {
+	var (
+		pinMu          sync.RWMutex
+		activePIN      = pin
+		failedAttempts int
+	)
+
 	fmt.Printf("\n🐎⚡ Rakhssh is ready!\n")
 	fmt.Printf("   ├── Machine ID : %s\n", hostID)
-	fmt.Printf("   ├── Secret PIN : %s\n", pin)
+	fmt.Printf("   ├── Secret PIN : %s\n", activePIN)
 	fmt.Printf("   └── Server     : %s\n\n", serverURL)
 	fmt.Println("Waiting for rider...")
 
@@ -278,7 +340,7 @@ func runHost(hostID, pin, serverURL string) {
 	// Flush any pending security notices accumulated while offline
 	daemon.FlushPendingNotices(os.Stderr)
 
-	sigClient, err := signaling.Dial(serverURL)
+	sigClient, err := dialSignaling(serverURL)
 	if err != nil {
 		log.Fatalf("failed to connect to signaling server %s: %v", serverURL, err)
 	}
@@ -315,7 +377,6 @@ func runHost(hostID, pin, serverURL string) {
 		fmt.Printf("[-] Session %s terminated by server: %s\n", safeID(sid), safeReason)
 		daemon.BroadcastSecurityNotice(fmt.Sprintf("Session %s terminated by server: %s", safeID(sid), safeReason))
 		_ = auditLogger.Log(audit.EventSessionDisconnected, safeID(sid), sid, "", fmt.Sprintf("Server terminated: %s", safeReason))
-		// The server has closed the session; also close the signaling connection
 		_ = sigClient.Close()
 	})
 
@@ -333,21 +394,43 @@ func runHost(hostID, pin, serverURL string) {
 		}
 
 		go func(sid string) {
-			// Recover from any panic in the handshake (e.g. malformed PAKE payload)
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Printf("[-] Panic recovered in session %s handler: %v\n", safeID(sid), r)
 				}
 			}()
 
-			session, err := transport.OrchestrateHost(ctx, sigClient, sid, pin, time.Duration(flagP2PTimeout)*time.Second)
+			pinMu.RLock()
+			currentPIN := activePIN
+			pinMu.RUnlock()
+
+			session, err := transport.OrchestrateHost(ctx, sigClient, sid, currentPIN, time.Duration(flagP2PTimeout)*time.Second)
 			if err != nil {
 				fmt.Printf("[-] Handshake failed for session %s: %v\n", safeID(sid), err)
 				daemon.BroadcastSecurityNotice(fmt.Sprintf("Handshake failed for Session %s", safeID(sid)))
 				_ = auditLogger.Log(audit.EventSessionRejected, safeID(sid), sid, "", fmt.Sprintf("Handshake error: %v", err))
+
+				pinMu.Lock()
+				failedAttempts++
+				if failedAttempts >= 3 {
+					if newPin, genErr := id.GeneratePIN(6); genErr == nil {
+						activePIN = newPin
+						failedAttempts = 0
+						fmt.Printf("\n⚠️  [SECURITY LOCKOUT] 3 consecutive handshake failures detected!\n")
+						fmt.Printf("⚠️  PIN brute-force lockout triggered. New Secret PIN: %s\n\n", activePIN)
+						daemon.BroadcastSecurityNotice(fmt.Sprintf("Brute-force lockout: PIN rotated to %s", activePIN))
+						_ = auditLogger.Log(audit.EventSessionRejected, safeID(sid), sid, "", fmt.Sprintf("3 failed attempts: PIN rotated to %s", activePIN))
+					}
+				}
+				pinMu.Unlock()
+				time.Sleep(1 * time.Second)
 				return
 			}
 			defer session.Close()
+
+			pinMu.Lock()
+			failedAttempts = 0
+			pinMu.Unlock()
 
 			session.SetSessionTimeouts(30*time.Minute, 2*time.Hour)
 			_ = auditLogger.Log(audit.EventSessionConnected, safeID(sid), sid, string(session.Type), "Authenticated via PAKE + key-confirmation")
@@ -367,7 +450,6 @@ func runHost(hostID, pin, serverURL string) {
 				}
 
 				go func(st net.Conn) {
-					// Read 1-byte channel type header
 					typeBuf := make([]byte, 1)
 					if _, err := io.ReadFull(st, typeBuf); err != nil {
 						_ = st.Close()
@@ -380,13 +462,8 @@ func runHost(hostID, pin, serverURL string) {
 					case tunnel.StreamTypePTY:
 						_ = ptySess.Attach(st)
 					case tunnel.StreamTypeDirect:
-						// Fix: the type byte was already consumed above, so we pass the stream
-						// directly to HandleDirectStream which reads the remaining sub-header,
-						// NOT HandleIncomingStream which would attempt to read the type byte again.
 						_ = tunnel.HandleDirectStream(st)
 					case tunnel.StreamTypeChat:
-						// Chat runs on a private pipe, NOT on os.Stdin/os.Stdout.
-						// This prevents a remote client from reading the operator's keystrokes.
 						chatIn, chatOut := io.Pipe()
 						go func() {
 							_ = chat.RunChat(st, "Host", safeID(sid), chatIn, os.Stderr)
@@ -408,18 +485,9 @@ func runConnect(targetID string) {
 		log.Fatalf("invalid ID: %v", err)
 	}
 
-	pin := flagPIN
-	if pin == "" {
-		fmt.Fprint(os.Stderr, "🔑 Enter PIN/Password: ")
-		bytePin, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			log.Fatalf("failed to read password: %v", err)
-		}
-		pin = strings.TrimSpace(string(bytePin))
-	}
+	pin := promptPIN()
 
-	sigClient, err := signaling.Dial(flagServer)
+	sigClient, err := dialSignaling(flagServer)
 	if err != nil {
 		log.Fatalf("failed to connect to signaling server %s: %v", flagServer, err)
 	}
@@ -496,21 +564,9 @@ func runProxy(targetID string) {
 		log.Fatalf("invalid ID: %v", err)
 	}
 
-	pin := flagPIN
-	if pin == "" {
-		pin = os.Getenv("RSSH_PIN")
-	}
-	if pin == "" {
-		fmt.Fprint(os.Stderr, "Enter PIN/Password: ")
-		bytePin, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			log.Fatalf("failed to read password: %v", err)
-		}
-		pin = strings.TrimSpace(string(bytePin))
-	}
+	pin := promptPIN()
 
-	sigClient, err := signaling.Dial(flagServer)
+	sigClient, err := dialSignaling(flagServer)
 	if err != nil {
 		log.Fatalf("signaling dial failed: %v", err)
 	}
@@ -562,18 +618,9 @@ func runForward(targetID string) {
 		log.Fatalf("invalid ID: %v", err)
 	}
 
-	pin := flagPIN
-	if pin == "" {
-		fmt.Fprint(os.Stderr, "🔑 Enter PIN/Password: ")
-		bytePin, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			log.Fatalf("failed to read password: %v", err)
-		}
-		pin = strings.TrimSpace(string(bytePin))
-	}
+	pin := promptPIN()
 
-	sigClient, err := signaling.Dial(flagServer)
+	sigClient, err := dialSignaling(flagServer)
 	if err != nil {
 		log.Fatalf("signaling dial failed: %v", err)
 	}
@@ -653,21 +700,9 @@ func runChatClient(targetID string) {
 		log.Fatalf("invalid ID: %v", err)
 	}
 
-	pin := flagPIN
-	if pin == "" {
-		pin = os.Getenv("RSSH_PIN")
-	}
-	if pin == "" {
-		fmt.Fprint(os.Stderr, "🔑 Enter PIN/Password: ")
-		bytePin, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			log.Fatalf("failed to read password: %v", err)
-		}
-		pin = strings.TrimSpace(string(bytePin))
-	}
+	pin := promptPIN()
 
-	sigClient, err := signaling.Dial(flagServer)
+	sigClient, err := dialSignaling(flagServer)
 	if err != nil {
 		log.Fatalf("signaling dial failed: %v", err)
 	}
@@ -719,9 +754,9 @@ func runChatHost(hostID string) {
 			hostID = generated
 		}
 	}
-	pin := flagPIN
+	pin := resolvePIN()
 	if pin == "" {
-		generatedPIN, err := id.GeneratePIN(4)
+		generatedPIN, err := id.GeneratePIN(6)
 		if err != nil {
 			log.Fatalf("failed to generate PIN: %v", err)
 		}
@@ -734,7 +769,7 @@ func runChatHost(hostID string) {
 	fmt.Printf("   └── Storage      : Ephemeral (Zero Disk Persistence)\n\n")
 	fmt.Println("Waiting for peer to join...")
 
-	sigClient, err := signaling.Dial(flagServer)
+	sigClient, err := dialSignaling(flagServer)
 	if err != nil {
 		log.Fatalf("signaling dial failed: %v", err)
 	}
@@ -757,7 +792,7 @@ func runChatHost(hostID string) {
 	)
 
 	sessionID := <-sessionCh
-	fmt.Printf("[+] Peer connected (Session: %s), performing Zero-Knowledge PAKE...\n", sessionID[:8])
+	fmt.Printf("[+] Peer connected (Session: %s), performing Zero-Knowledge PAKE...\n", safeID(sessionID))
 
 	session, err := transport.OrchestrateHost(ctx, sigClient, sessionID, pin, time.Duration(flagP2PTimeout)*time.Second)
 	if err != nil {
@@ -781,5 +816,5 @@ func runChatHost(hostID string) {
 		log.Fatalf("failed to read stream header: %v", err)
 	}
 
-	_ = chat.RunChat(stream, "Host", sessionID[:8], os.Stdin, os.Stdout)
+	_ = chat.RunChat(stream, "Host", safeID(sessionID), os.Stdin, os.Stdout)
 }
