@@ -2,6 +2,7 @@
 package signaling
 
 import (
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -95,22 +96,36 @@ func ExtractIP(remoteAddr string) string {
 	return remoteAddr
 }
 
+// isTrustedProxy returns true if the incoming IP is loopback or a private subnet (Docker bridge/LAN)
+func isTrustedProxy(ipStr string) bool {
+	if ipStr == "127.0.0.1" || ipStr == "::1" {
+		return true
+	}
+	parsed := net.ParseIP(ipStr)
+	if parsed == nil {
+		return false
+	}
+	return parsed.IsLoopback() || parsed.IsPrivate()
+}
+
 // RealIPFromRequest extracts the true client IP, honouring X-Real-IP / X-Forwarded-For
-// if the connection comes from localhost (i.e. behind a trusted reverse proxy).
+// if the connection comes from localhost or a trusted private proxy (Docker bridge gateway, LAN).
 func RealIPFromRequest(r *http.Request) string {
 	remoteIP := ExtractIP(r.RemoteAddr)
-	// Only trust proxy headers if the immediate connection is from loopback
-	if remoteIP == "127.0.0.1" || remoteIP == "::1" {
+	if isTrustedProxy(remoteIP) {
+		// Prefer X-Real-IP set explicitly by reverse proxy (cannot be spoofed by client append)
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			trimmed := trimSpace(xri)
+			if trimmed != "" {
+				return trimmed
+			}
+		}
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			// Take the first (leftmost) IP
 			for _, part := range splitCSV(xff) {
 				if ip := trimSpace(part); ip != "" {
 					return ip
 				}
 			}
-		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			return trimSpace(xri)
 		}
 	}
 	return remoteIP
