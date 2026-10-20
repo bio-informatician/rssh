@@ -89,7 +89,7 @@ func NewTunnelManager(session *transport.Session) *TunnelManager {
 
 // StartLocalForward opens a local TCP listener and tunnels connections to the remote host
 func (m *TunnelManager) StartLocalForward(spec *ForwardSpec) (net.Listener, error) {
-	addr := fmt.Sprintf("%s:%d", spec.BindAddr, spec.LocalPort)
+	addr := net.JoinHostPort(spec.BindAddr, strconv.Itoa(spec.LocalPort))
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
@@ -172,7 +172,7 @@ func HandleDirectStream(stream net.Conn) error {
 	}
 	port := binary.BigEndian.Uint16(portBuf)
 
-	targetAddr := fmt.Sprintf("%s:%d", string(hostBuf), port)
+	targetAddr := net.JoinHostPort(string(hostBuf), strconv.Itoa(int(port)))
 	targetConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
 	if err != nil {
 		return err
@@ -185,7 +185,7 @@ func HandleDirectStream(stream net.Conn) error {
 
 // StartSOCKS5Proxy starts a local SOCKS5 proxy server that tunnels traffic through the remote host
 func (m *TunnelManager) StartSOCKS5Proxy(bindAddr string, port int) (net.Listener, error) {
-	addr := fmt.Sprintf("%s:%d", bindAddr, port)
+	addr := net.JoinHostPort(bindAddr, strconv.Itoa(port))
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to bind SOCKS5 on %s: %w", addr, err)
