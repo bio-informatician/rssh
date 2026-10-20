@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   rssh-server:
     build: .
@@ -5,4 +7,20 @@ services:
     restart: always
     ports:
       - "8443:8443"
-    command: ["--addr", ":8443"]
+    environment:
+      - PORT=8443
+    command: ["--addr", ":8443", "--idle-timeout", "30m", "--max-duration", "2h"]
+    volumes:
+      - ./certs:/etc/ssl/rssh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8443/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
