@@ -1,4 +1,6 @@
+// Copyright (C) 2026 Rakhssh Contributors - AGPLv3
 package crypto
+
 
 import (
 	"crypto/hmac"
