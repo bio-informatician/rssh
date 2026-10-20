@@ -1,0 +1,20 @@
+[Unit]
+Description=Rakhssh Unattended Host Daemon
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/rssh/daemon.env
+ExecStart=%h/.local/bin/rssh daemon
+Restart=always
+RestartSec=5s
+
+# Process security
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.rssh %h/.config/rssh /dev/pts
+
+[Install]
+WantedBy=default.target

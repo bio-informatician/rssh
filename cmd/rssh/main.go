@@ -40,7 +40,7 @@ func getDefaultServer() string {
 	if s := os.Getenv("RSSH_SERVER"); s != "" {
 		return s
 	}
-	return "ws://localhost:8443"
+	return "wss://relay.rakhssh.com"
 }
 
 func main() {
