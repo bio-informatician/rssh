@@ -135,10 +135,10 @@ Rakhssh is built in **Go** for zero-dependency cross-compilation, tiny binary fo
 
 * **Embedded SSH Server & Protocol:** `golang.org/x/crypto/ssh` & `github.com/gliderlabs/ssh`
 * **Pseudo-Terminal (PTY) Management:** `github.com/creack/pty` (Unix) & ConPTY (Windows)
-* **Zero-Knowledge PAKE Cryptography:** `github.com/schollz/pake/v3`
-* **User-Space P2P & NAT Traversal:** `github.com/pion/webrtc/v4` (Data Channels) / `github.com/quic-go/quic-go`
+* **Zero-Knowledge PAKE Cryptography:** 100% Novel clean-room SPAKE2 on NIST P-256 (Zero external dependencies)
+* **User-Space P2P & NAT Traversal:** `github.com/pion/webrtc/v4` (Data Channels)
 * **Stream Multiplexing:** `github.com/hashicorp/yamux`
-* **Stealth WebSocket Transport:** `nhooyr.io/websocket`
+* **Stealth WebSocket Transport:** `github.com/gorilla/websocket`
 * **CLI Interface:** `github.com/spf13/cobra`
 
 ---
@@ -146,25 +146,25 @@ Rakhssh is built in **Go** for zero-dependency cross-compilation, tiny binary fo
 ## 🗺️ Development Roadmap
 
 ### Phase 1: MVP — Stealth Relay & PAKE Terminal
-- [ ] Build lightweight `rssh-server` for WebSocket signaling and fallback relay.
-- [ ] Implement 9-digit ID generation and registration for `rssh host`.
-- [ ] Integrate `SPAKE2` (PAKE) handshake + ChaCha20-Poly1305 stream encryption between Host and Client.
-- [ ] Spawn cross-platform PTY on Host and pipe encrypted `stdin`/`stdout` + terminal window resize (`SIGWINCH`) events.
+- [x] Build lightweight `rssh-server` for WebSocket signaling and fallback relay.
+- [x] Implement 9-digit ID generation and registration for `rssh host`.
+- [x] Integrate `SPAKE2` (PAKE) handshake + ChaCha20-Poly1305 stream encryption between Host and Client.
+- [x] Spawn cross-platform PTY on Host and pipe encrypted `stdin`/`stdout` + terminal window resize (`SIGWINCH`) events.
 
 ### Phase 2: Multiplexing & Full OpenSSH Ecosystem
-- [ ] Layer `yamux` stream multiplexer over the encrypted connection.
-- [ ] Embed user-space SSH server (`gliderlabs/ssh`) inside the host process over `yamux`.
-- [ ] Implement `rssh proxy <ID>` to support standard OpenSSH `ProxyCommand` (unlocking `scp`, `sftp`, `rsync`, and VS Code Remote-SSH).
-- [ ] Add built-in TCP port forwarding (`-L`, `-R`, and `-D` SOCKS5 proxy).
+- [x] Layer `yamux` stream multiplexer over the encrypted connection.
+- [x] Embed user-space SSH server (`gliderlabs/ssh`) inside the host process over `yamux`.
+- [x] Implement `rssh proxy <ID>` to support standard OpenSSH `ProxyCommand` (unlocking `scp`, `sftp`, `rsync`, and VS Code Remote-SSH).
+- [x] Add built-in TCP port forwarding (`-L` and `-D` SOCKS5 proxy).
 
 ### Phase 3: Lightning P2P (NAT Traversal)
-- [ ] Integrate STUN/ICE candidate gathering via `pion/webrtc` Data Channels.
-- [ ] Implement "Fast-Start, Smart-Upgrade": connect immediately via WebSocket Relay (<500ms) while negotiating direct UDP Hole Punching in the background, then seamlessly hot-swap the underlying transport to P2P.
+- [x] Integrate STUN/ICE candidate gathering via `pion/webrtc` Data Channels.
+- [x] Fast-Start, Smart-Upgrade: direct WebRTC DataChannel P2P with seamless fallback to stealth WebSocket Relay.
 
 ### Phase 4: Session Persistence & Unattended Access
-- [ ] Implement detached PTY state buffer on the host (surviving network drops and IP roaming without needing `tmux`).
-- [ ] Build `rssh daemon` mode with user-level service installers (`systemd --user`, macOS `launchd`, Windows Task Scheduler).
-- [ ] Add optional Self-Hosted Relay deployment scripts (Docker / One-click Cloudflare Tunnel setup).
+- [x] Implement detached PTY state buffer on the host.
+- [x] Build `rssh daemon` mode with user-level service installer (`systemd --user`).
+- [x] Ephemeral end-to-end encrypted in-session terminal chat.
 
 ---
 
@@ -177,4 +177,4 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 - **Responsible Disclosure:** If you discover a vulnerability, please report it via private security advisory.
 
 ## 📄 License
-Distributed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** with dual-licensing available for commercial managed relay providers. See [LICENSE](file:///home/shrm/project/rssh/LICENSE) for more information.
+Distributed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** with dual-licensing available for commercial managed relay providers. See [LICENSE](file:///home/shrm/project/rssh/LICENSE) and [COMMERCIAL_LICENSE.md](file:///home/shrm/project/rssh/COMMERCIAL_LICENSE.md) for more information.
