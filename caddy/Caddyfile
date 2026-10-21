@@ -1,0 +1,6 @@
+# Caddy configuration for Rakhssh signaling & relay server
+# Caddy automatically provisions and renews Let's Encrypt TLS certificates.
+
+relay.yourdomain.com {
+    reverse_proxy 127.0.0.1:8443
+}

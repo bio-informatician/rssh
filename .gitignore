@@ -1,15 +1,23 @@
-# Go binaries and tools installed locally
-.go/
-.gopath/
-.gocache/
+# Binaries
 bin/
-/rssh
-/rssh-server
+*.exe
+*.dll
+*.so
+*.dylib
 
-# Coverage and test artifacts
+# Test artifacts
 *.out
 *.test
+.gocache/
+.gopath/
+.go/
 
-# IDE files
-.vscode/
-.idea/
+# TLS certificates
+certs/
+*.pem
+*.key
+*.crt
+
+# Environment and logs
+.env
+*.log

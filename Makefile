@@ -1,33 +1,31 @@
-.PHONY: all build test clean cross-compile
+.PHONY: all build test clean docker-build run install-service
 
-BINARY_NAME=rssh
-SERVER_NAME=rssh-server
-BUILD_DIR=bin
+BINARY_NAME := rssh-server
+BUILD_DIR := bin
 
-all: build
+all: test build
 
 build:
 	@mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/rssh
-	go build -o $(BUILD_DIR)/$(SERVER_NAME) ./cmd/rssh-server
+	go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/rssh-server
 
 test:
-	go test -v -count=1 ./...
+	go test -v -race -count=1 ./...
 
-cross-compile:
-	@mkdir -p $(BUILD_DIR)/dist
-	# Linux amd64
-	GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/dist/$(BINARY_NAME)-linux-amd64 ./cmd/rssh
-	GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/dist/$(SERVER_NAME)-linux-amd64 ./cmd/rssh-server
-	# Linux arm64
-	GOOS=linux GOARCH=arm64 go build -o $(BUILD_DIR)/dist/$(BINARY_NAME)-linux-arm64 ./cmd/rssh
-	GOOS=linux GOARCH=arm64 go build -o $(BUILD_DIR)/dist/$(SERVER_NAME)-linux-arm64 ./cmd/rssh-server
-	# macOS amd64
-	GOOS=darwin GOARCH=amd64 go build -o $(BUILD_DIR)/dist/$(BINARY_NAME)-darwin-amd64 ./cmd/rssh
-	# macOS arm64 (Apple Silicon)
-	GOOS=darwin GOARCH=arm64 go build -o $(BUILD_DIR)/dist/$(BINARY_NAME)-darwin-arm64 ./cmd/rssh
-	# Windows amd64
-	GOOS=windows GOARCH=amd64 go build -o $(BUILD_DIR)/dist/$(BINARY_NAME)-windows-amd64.exe ./cmd/rssh
+run: build
+	./$(BUILD_DIR)/$(BINARY_NAME) --addr :8443
+
+docker-build:
+	docker build -t rssh-server:latest .
+
+install-service: build
+	@echo "Installing rssh-server to /usr/local/bin..."
+	sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/
+	sudo id -u rssh &>/dev/null || sudo useradd --system --no-create-home --shell /bin/false rssh
+	sudo cp systemd/rssh-server.service /etc/systemd/system/
+	sudo systemctl daemon-reload
+	sudo systemctl enable --now rssh-server
+	@echo "Service installed and started. Check status: sudo systemctl status rssh-server"
 
 clean:
 	rm -rf $(BUILD_DIR)
