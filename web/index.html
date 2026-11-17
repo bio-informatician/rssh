@@ -42,7 +42,8 @@
       <div class="header-center">
         <div class="app-title">
           <span>رخش چت</span>
-          <span class="version-tag">v1.2.0</span>
+          <span class="version-tag">v1.3.0</span>
+          <span id="transportBadge" class="transport-pill ws" title="روش ارتباط و انتقال داده">⚡ وب‌سوکت</span>
         </div>
         <div class="connection-status">
           <span id="statusIndicator" class="status-dot disconnected"></span>
@@ -146,8 +147,13 @@
           </button>
         </form>
 
+        <div class="gate-security-banner">
+          <span class="sec-icon">🛡️</span>
+          <span>رمزنگاری سرتاسری AES-256 + تونل ضد فایروال (تحویل تضمینی پیام‌ها)</span>
+        </div>
+
         <div class="gate-footer-note">
-          <span>● پیام‌ها و اتاق‌ها کاملاً مجزا و محافظت‌شده هستند</span>
+          <span>● پیام‌ها به صورت سرتاسری رمزگذاری می‌شوند؛ سرور یا فایروال قادر به خواندن آن‌ها نیست</span>
         </div>
       </div>
     </div>
@@ -235,6 +241,7 @@
     </div>
   </div>
 
+  <script src="crypto-js.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

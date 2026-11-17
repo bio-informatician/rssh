@@ -14,12 +14,13 @@ SERVER_PY = os.path.join(BASE_DIR, "server", "server.py")
 WEB_INDEX = os.path.join(BASE_DIR, "web", "index.html")
 WEB_STYLE = os.path.join(BASE_DIR, "web", "style.css")
 WEB_APP = os.path.join(BASE_DIR, "web", "app.js")
+WEB_CRYPTO = os.path.join(BASE_DIR, "web", "crypto-js.min.js")
 WEB_MANIFEST = os.path.join(BASE_DIR, "web", "manifest.json")
 WEB_ICON = os.path.join(BASE_DIR, "web", "apple-touch-icon.png")
 
 INSTALLER_PATH = os.path.join(BASE_DIR, "install.sh")
 STAGED_PATH = "/home/agent/agent-work/install.sh"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 STAGED_VERSIONED_PATH = f"/home/agent/agent-work/install-v{VERSION}.sh"
 
 
@@ -38,6 +39,7 @@ def build_installer():
     index_html_content = read_file(WEB_INDEX)
     style_css_content = read_file(WEB_STYLE)
     app_js_content = read_file(WEB_APP)
+    crypto_js_content = read_file(WEB_CRYPTO)
     manifest_json_content = read_file(WEB_MANIFEST)
     icon_b64 = read_binary_b64(WEB_ICON)
 
@@ -174,6 +176,10 @@ STYLE_EOF
 cat << 'APP_EOF' > "${{INSTALL_DIR}}/web/app.js"
 {app_js_content}
 APP_EOF
+
+cat << 'CRYPTO_EOF' > "${{INSTALL_DIR}}/web/crypto-js.min.js"
+{crypto_js_content}
+CRYPTO_EOF
 
 cat << 'MANIFEST_EOF' > "${{INSTALL_DIR}}/web/manifest.json"
 {manifest_json_content}

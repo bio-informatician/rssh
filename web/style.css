@@ -109,6 +109,64 @@ body {
   direction: ltr;
 }
 
+.transport-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.3s ease;
+}
+
+.transport-pill.ws {
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.transport-pill.http {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.gate-security-banner {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: #38bdf8;
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.msg-lock {
+  font-size: 10px;
+  margin-left: 3px;
+  opacity: 0.8;
+  vertical-align: middle;
+}
+
+.msg-status.pending {
+  color: #f59e0b;
+  font-size: 11px;
+  animation: pulse-spin 1.5s infinite;
+}
+
+@keyframes pulse-spin {
+  0% { opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { opacity: 0.4; }
+}
+
 .status-dot {
   width: 8px;
   height: 8px;

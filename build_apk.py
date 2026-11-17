@@ -67,10 +67,10 @@ def build_apk():
 
     assets_dir = os.path.join(BUILD_DIR, "assets", "web")
     os.makedirs(assets_dir, exist_ok=True)
-    for fname in ["index.html", "app.js", "style.css"]:
+    for fname in ["index.html", "app.js", "style.css", "crypto-js.min.js", "manifest.json", "apple-touch-icon.png"]:
         src = os.path.join(WEB_DIR, fname)
-        dst = os.path.join(assets_dir, fname)
-        shutil.copy2(src, dst)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(assets_dir, fname))
 
     gen_dir = os.path.join(BUILD_DIR, "gen")
     classes_dir = os.path.join(BUILD_DIR, "classes")

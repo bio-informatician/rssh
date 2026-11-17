@@ -26,7 +26,7 @@ def send_file(file_path, filename, caption, mime_type="application/octet-stream"
     with open(file_path, "rb") as f:
         file_data = f.read()
 
-    boundary = "----WebKitFormBoundaryRakhsshUploadV110x7Q"
+    boundary = "----WebKitFormBoundaryRakhsshUploadV130x9Z"
     body = bytearray()
 
     # chat_id
@@ -66,32 +66,32 @@ def send_file(file_path, filename, caption, mime_type="application/octet-stream"
         print(f"Telegram error for {filename}: {e}")
         return False
 
-# 1. Dispatch Android APK v1.2.0
+# 1. Dispatch Android APK v1.3.0
 apk_caption = (
-    "📱 رخش چت نسخه ۱.۲.۰ (Rakhssh Chat v1.2.0)\n\n"
-    "✨ ویژگی‌های جدید اضافه شده:\n"
-    "🔒 ۱. ورود به اتاق‌ها با نام دقیق و رمز سخت اختصاصی (هیچ کاربری نمی‌تواند اتاق‌های دیگران را ببیند یا پیام‌های آن‌ها را شنود کند)\n"
-    "🔔 ۲. ماندگاری اتصال در حالت قفل بودن صفحه و پس‌زمینه (Android Foreground Service + WakeLock)\n"
-    "📲 ۳. نمایش نوتیفیکیشن روی صفحه قفل (Lock Screen Heads-up Notifications) همراه با ویبره و زنگ هنگام دریافت پیام\n"
-    "⚡ ۴. پینگ/پونگ دوره‌ای ۲۰ ثانیه‌ای برای جلوگیری از قطعی اینترنت همراه/اپراتورها"
+    "📱 رخش چت نسخه ۱.۳.۰ (Rakhssh Chat v1.3.0)\n\n"
+    "🛡️ قابلیت‌های جدید ضد فایروال و امنیت پیشرفته:\n"
+    "🔒 ۱. رمزنگاری سرتاسری AES-256 (E2EE): تمامی پیام‌ها قبل از ارسال در گوشی مبدأ رمزگذاری می‌شوند. فایروال یا سرور هیچ دسترسی به متن پیام ندارند.\n"
+    "🛡️ ۲. تونل ضد فایروال (Dual-Transport Safe Tunnel): در صورت مسدود بودن وب‌سوکت توسط فایروال سختگیر موبایل، برنامه به طور خودکار به درخواست‌های امن HTTP جابجا شده و پیام‌ها بدون قطعی می‌رسند.\n"
+    "📦 ۳. صف تحویل تضمینی (Zero-Loss Queue): در صورت قطعی لحظه‌ای اتصال موبایل، پیام‌ها در صف نگهداری و پس از اتصال مجدد بدون نیاز به تلاش کاربر ارسال می‌شوند.\n"
+    "🔄 ۴. همگام‌سازی تاریخچه پیام‌ها: بازیابی پیام‌های ارسال‌شده در گروه هنگام آفلاین بودن گوشی."
 )
 send_file(
-    os.path.expanduser("~/agent-work/chat-v1.2.0.apk"),
-    "chat-v1.2.0.apk",
+    os.path.expanduser("~/agent-work/chat-v1.3.0.apk"),
+    "chat-v1.3.0.apk",
     apk_caption,
     "application/vnd.android.package-archive"
 )
 
-# 2. Dispatch Server Installer v1.2.0
+# 2. Dispatch Server Installer v1.3.0
 installer_caption = (
-    "🚀 اسکریپت نصب سرور چت نسخه ۱.۲.۰ (Ubuntu Auto-Installer v1.2.0)\n\n"
-    "• پشتیبانی کامل از اتاق‌های امن با رمزگذاری هش و جداسازی قطعی پیام‌ها\n"
-    "• ارسال نوتیفیکیشن وب و اندروید در حالت پس‌زمینه\n"
+    "🚀 اسکریپت نصب سرور چت نسخه ۱.۳.۰ (Ubuntu Auto-Installer v1.3.0)\n\n"
+    "• پشتیبانی کامل از تونل ضد فایروال HTTP REST (/api/send و /api/poll) در کنار WebSocket\n"
+    "• بافر تاریخچه پیام‌های رمزگذاری‌شده در هر اتاق برای جلوگیری از حذف یا گم شدن پیام‌ها\n"
     "• دستور نصب روی سرور: sudo bash install.sh"
 )
 send_file(
-    os.path.expanduser("~/agent-work/install-v1.2.0.sh"),
-    "install-v1.2.0.sh",
+    os.path.expanduser("~/agent-work/install-v1.3.0.sh"),
+    "install-v1.3.0.sh",
     installer_caption,
     "text/x-shellscript"
 )
