@@ -15,6 +15,7 @@
   const roomStatusBadge = document.getElementById("roomStatusBadge");
   const currentRoomDisplay = document.getElementById("currentRoomDisplay");
   const transportBadge = document.getElementById("transportBadge");
+  const antiDpiBadge = document.getElementById("antiDpiBadge");
   const btnSettings = document.getElementById("btnSettings");
   const btnLeaveRoom = document.getElementById("btnLeaveRoom");
   const btnNotification = document.getElementById("btnNotification");
@@ -46,6 +47,11 @@
   const settingsModal = document.getElementById("settingsModal");
   const btnCloseSettings = document.getElementById("btnCloseSettings");
   const modalServerUrl = document.getElementById("modalServerUrl");
+  const modalCleanIp = document.getElementById("modalCleanIp");
+  const antiDpiToggle = document.getElementById("antiDpiToggle");
+  const decoyChaffToggle = document.getElementById("decoyChaffToggle");
+  const btnPresetDirect = document.getElementById("btnPresetDirect");
+  const btnPresetCfTunnel = document.getElementById("btnPresetCfTunnel");
   const autoReconnectInput = document.getElementById("autoReconnect");
   const keepCredentialsInput = document.getElementById("keepCredentials");
   const btnTestNotif = document.getElementById("btnTestNotif");
@@ -55,7 +61,8 @@
   // Application State
   let ws = null;
   let wsHandshakeTimer = null;
-  let heartbeatTimer = null;
+  let jitteredPingTimer = null;
+  let decoyChaffTimer = null;
   let reconnectTimer = null;
   let httpPollTimer = null;
   let queueRetryTimer = null;
@@ -70,11 +77,15 @@
     room: "",
     password: "",
     serverUrl: "",
+    cleanIp: "",
+    antiDpi: true,
+    decoyChaff: true,
     autoReconnect: true,
     keepCredentials: true,
     isAuthenticated: false,
     transportMode: "ws", // "ws" | "http"
     lastSyncTimestamp: 0.0,
+    lastActivityTime: Date.now(),
     outgoingQueue: [],
     seenMessageIds: new Set(),
   };
@@ -93,6 +104,9 @@
   if (savedConfig.nickname) state.nickname = savedConfig.nickname;
   if (savedConfig.room) state.room = savedConfig.room;
   if (savedConfig.password) state.password = savedConfig.password;
+  if (savedConfig.cleanIp) state.cleanIp = savedConfig.cleanIp;
+  if (savedConfig.antiDpi !== undefined) state.antiDpi = savedConfig.antiDpi;
+  if (savedConfig.decoyChaff !== undefined) state.decoyChaff = savedConfig.decoyChaff;
   if (savedConfig.autoReconnect !== undefined) state.autoReconnect = savedConfig.autoReconnect;
   if (savedConfig.keepCredentials !== undefined) state.keepCredentials = savedConfig.keepCredentials;
 
@@ -102,6 +116,9 @@
   gateRoomPassword.value = state.password || "";
   serverUrlInput.value = state.serverUrl;
   modalServerUrl.value = state.serverUrl;
+  if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
+  if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
+  if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
   autoReconnectInput.checked = state.autoReconnect;
   keepCredentialsInput.checked = state.keepCredentials;
 
@@ -109,6 +126,9 @@
   function persistSettings() {
     const dataToSave = {
       serverUrl: state.serverUrl,
+      cleanIp: state.cleanIp,
+      antiDpi: state.antiDpi,
+      decoyChaff: state.decoyChaff,
       nickname: state.nickname,
       autoReconnect: state.autoReconnect,
       keepCredentials: state.keepCredentials,
@@ -194,6 +214,85 @@
     } catch (err) {
       return null;
     }
+  }
+
+  // ==========================================================================
+  // Anti-DPI & Traffic Shaping Engine (Random Noise Padding & Jitter)
+  // ==========================================================================
+  function generateRandomNoise(minLen = 400, maxLen = 1600) {
+    const len = Math.floor(minLen + Math.random() * (maxLen - minLen));
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_~";
+    let str = "";
+    for (let i = 0; i < len; i++) {
+      str += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return str;
+  }
+
+  function wrapAntiDpi(payload) {
+    state.lastActivityTime = Date.now();
+    if (state.antiDpi && payload && typeof payload === "object") {
+      payload._pad = generateRandomNoise(400, 1600);
+      payload._ts = Date.now();
+    }
+    return payload;
+  }
+
+  function unwrapAntiDpi(payload) {
+    if (payload && typeof payload === "object") {
+      delete payload._pad;
+      delete payload._ts;
+      delete payload.padding;
+    }
+    return payload;
+  }
+
+  function updateAntiDpiBadge() {
+    if (!antiDpiBadge) return;
+    if (state.antiDpi) {
+      antiDpiBadge.classList.remove("disabled");
+      antiDpiBadge.classList.add("active");
+      antiDpiBadge.textContent = "🛡️ ضد DPI";
+      antiDpiBadge.title = "سپر ضد DPI: پدینگ تصادفی بسته (۴۰۰-۱۶۰۰ بایت) و فرکانس زمانی نامنظم فعال است";
+    } else {
+      antiDpiBadge.classList.remove("active");
+      antiDpiBadge.classList.add("disabled");
+      antiDpiBadge.textContent = "🛡️ بدون ضد DPI";
+      antiDpiBadge.title = "سپر ضد DPI غیرفعال است";
+    }
+  }
+
+  function startJitteredPingLoop() {
+    if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    // Dynamic Jitter: between 14 and 28 seconds (breaks periodic timing fingerprints)
+    const delay = Math.floor(14000 + Math.random() * 14000);
+    jitteredPingTimer = setTimeout(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(wrapAntiDpi({ type: "ping" })));
+        } catch (e) {}
+      }
+      startJitteredPingLoop();
+    }, delay);
+  }
+
+  function startDecoyChaffLoop() {
+    clearInterval(decoyChaffTimer);
+    decoyChaffTimer = setInterval(() => {
+      if (!state.decoyChaff || !state.isAuthenticated) return;
+      const idleSeconds = (Date.now() - state.lastActivityTime) / 1000;
+      // If idle for over 35 seconds, send covert decoy traffic
+      if (idleSeconds >= 35) {
+        state.lastActivityTime = Date.now();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify(wrapAntiDpi({ type: "decoy" })));
+          } catch (e) {}
+        }
+      }
+    }, 10000);
   }
 
   // ==========================================================================
@@ -440,10 +539,10 @@
     for (const item of pending) {
       let sentSuccess = false;
 
-      // Mode 1: WebSocket Send
+      // Mode 1: WebSocket Send with Anti-DPI Traffic Shaping
       if (state.transportMode === "ws" && ws && ws.readyState === WebSocket.OPEN) {
         try {
-          ws.send(JSON.stringify({
+          const packet = wrapAntiDpi({
             type: "chat",
             msgId: item.msgId,
             room: state.room,
@@ -451,7 +550,8 @@
             ciphertext: item.ciphertext,
             encrypted: item.encrypted,
             time: item.time,
-          }));
+          });
+          ws.send(JSON.stringify(packet));
           sentSuccess = true;
           markMessageDelivered(item.msgId);
         } catch (e) {
@@ -466,7 +566,7 @@
           const res = await fetch(httpUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+            body: JSON.stringify(wrapAntiDpi({
               room: state.room,
               password: state.password,
               sender: state.nickname,
@@ -474,7 +574,7 @@
               encrypted: item.encrypted,
               msgId: item.msgId,
               time: item.time,
-            }),
+            })),
           });
           if (res.ok) {
             const data = await res.json();
@@ -564,27 +664,21 @@
       clearTimeout(wsHandshakeTimer);
       updateStatus("connecting", "در حال تایید کلید امنیتی...");
 
-      // Send join room authentication payload
-      const joinPayload = {
+      // Send join room authentication payload with Anti-DPI Traffic Shaping
+      const joinPayload = wrapAntiDpi({
         type: "join",
         room: state.room,
         password: state.password,
         sender: state.nickname,
         time: formatTime(),
-      };
+      });
       try {
         ws.send(JSON.stringify(joinPayload));
       } catch (e) {}
 
-      // Start 20s Keepalive Heartbeat
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = setInterval(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.send(JSON.stringify({ type: "ping" }));
-          } catch (e) {}
-        }
-      }, 20000);
+      // Start Anti-DPI Jittered Ping and Decoy Cover Traffic Loops
+      startJitteredPingLoop();
+      startDecoyChaffLoop();
     };
 
     ws.onmessage = (event) => {
@@ -596,18 +690,30 @@
         return;
       }
       if (!parsed) return;
+      unwrapAntiDpi(parsed);
+
+      // Silently drop Anti-DPI decoy chaff / cover traffic
+      if (parsed.type === "decoy" || parsed.decoy) {
+        return;
+      }
+
+      // Ignore Pong
+      if (parsed.type === "pong") {
+        return;
+      }
 
       // Authentication Success
       if (parsed.type === "auth_success") {
         isConnecting = false;
         state.transportMode = "ws";
         updateTransportBadge("ws");
+        updateAntiDpiBadge();
         updateStatus("connected", "متصل (وب‌سوکت)");
         nativeToast(`وارد اتاق امن «${parsed.room || state.room}» شدید`);
         enterChatView(parsed.room || state.room);
         appendMessage({
           type: "system",
-          text: `به اتاق امن و اختصاصی «${parsed.room || state.room}» متصل شدید. تمامی پیام‌ها با رمزنگاری سرتاسری AES-256 محافظت می‌شوند.`,
+          text: `به اتاق امن و اختصاصی «${parsed.room || state.room}» متصل شدید. تمامی پیام‌ها با رمزنگاری سرتاسری AES-256 و پدینگ تصادفی ضد DPI محافظت می‌شوند.`,
           isEncrypted: false,
         });
         flushOutgoingQueue();
@@ -667,7 +773,8 @@
     };
 
     ws.onclose = () => {
-      clearInterval(heartbeatTimer);
+      if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+      clearInterval(decoyChaffTimer);
 
       if (state.isAuthenticated) {
         // If disconnected after being authenticated, try HTTP fallback immediately
@@ -685,8 +792,11 @@
   async function activateHttpTunnelFallback() {
     isConnecting = false;
     clearTimeout(wsHandshakeTimer);
+    if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+    clearInterval(decoyChaffTimer);
     state.transportMode = "http";
     updateTransportBadge("http");
+    updateAntiDpiBadge();
 
     if (!state.room || !state.password) return;
 
@@ -694,15 +804,15 @@
     const httpBase = getHttpBaseUrl(state.serverUrl);
 
     try {
-      // 1. Authenticate via POST /api/join
+      // 1. Authenticate via POST /api/join with Anti-DPI Traffic Shaping
       const joinRes = await fetch(`${httpBase}/api/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(wrapAntiDpi({
           room: state.room,
           password: state.password,
           sender: state.nickname,
-        }),
+        })),
       });
 
       if (!joinRes.ok) {
@@ -984,6 +1094,9 @@
   // Settings Modal Handlers
   function openSettings() {
     modalServerUrl.value = state.serverUrl;
+    if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
+    if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
+    if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
     autoReconnectInput.checked = state.autoReconnect;
     keepCredentialsInput.checked = state.keepCredentials;
     settingsModal.classList.remove("hidden");
@@ -992,11 +1105,42 @@
   function closeSettings() {
     state.serverUrl = sanitizeServerUrl(modalServerUrl.value);
     serverUrlInput.value = state.serverUrl;
+    if (modalCleanIp) state.cleanIp = modalCleanIp.value.trim();
+    if (antiDpiToggle) state.antiDpi = antiDpiToggle.checked;
+    if (decoyChaffToggle) state.decoyChaff = decoyChaffToggle.checked;
     state.autoReconnect = autoReconnectInput.checked;
     state.keepCredentials = keepCredentialsInput.checked;
+    updateAntiDpiBadge();
     persistSettings();
     settingsModal.classList.add("hidden");
   }
+
+  // Connection Presets Handlers
+  if (btnPresetDirect) {
+    btnPresetDirect.addEventListener("click", () => {
+      modalServerUrl.value = "ws://193.168.175.227:8765";
+      nativeToast("الگوی اتصال مستقیم سرور انتخاب شد (:8765)");
+    });
+  }
+
+  if (btnPresetCfTunnel) {
+    btnPresetCfTunnel.addEventListener("click", () => {
+      // If a saved tunnel URL or host exists, use it, otherwise provide Cloudflare WSS template
+      const currentTunnel = state.serverUrl.startsWith("wss://") ? state.serverUrl : "wss://chat.yourdomain.com";
+      modalServerUrl.value = currentTunnel;
+      nativeToast("الگوی کلودفلر تونل انتخاب شد (WSS پورت 443)");
+    });
+  }
+
+  if (antiDpiToggle) {
+    antiDpiToggle.addEventListener("change", () => {
+      state.antiDpi = antiDpiToggle.checked;
+      updateAntiDpiBadge();
+    });
+  }
+
+  // Initialize Anti-DPI badge status on launch
+  updateAntiDpiBadge();
 
   btnSettings.addEventListener("click", openSettings);
   btnCloseSettings.addEventListener("click", closeSettings);

@@ -121,8 +121,20 @@ case "$1" in
     attach)
         attach_server
         ;;
+    tunnel-start|start-tunnel)
+        "$DIR/tunnel.sh" start
+        ;;
+    tunnel-stop|stop-tunnel)
+        "$DIR/tunnel.sh" stop
+        ;;
+    tunnel-status)
+        "$DIR/tunnel.sh" status
+        ;;
+    tunnel-url)
+        "$DIR/tunnel.sh" url
+        ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|logs|attach}"
+        echo "Usage: $0 {start|stop|restart|status|logs|attach|start-tunnel|stop-tunnel|tunnel-status|tunnel-url}"
         exit 1
         ;;
 esac

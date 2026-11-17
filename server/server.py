@@ -31,7 +31,7 @@ import time
 import urllib.parse
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 # Connected WebSocket clients
 clients = set()
@@ -94,6 +94,31 @@ FALLBACK_HTML = """<!DOCTYPE html>
 def hash_password(password: str, salt: str) -> str:
     """Compute cryptographic hash of password using salt."""
     return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+
+
+def generate_random_padding(min_bytes: int = 384, max_bytes: int = 1536) -> str:
+    """Generates variable-length random noise string for Anti-DPI packet shaping."""
+    length = secrets.randbelow(max(1, max_bytes - min_bytes + 1)) + min_bytes
+    return secrets.token_urlsafe(length)[:length]
+
+
+def strip_anti_dpi_padding(payload: dict) -> dict:
+    """Safely removes Anti-DPI padding and telemetry noise from message dict."""
+    if not isinstance(payload, dict):
+        return payload
+    payload.pop("_pad", None)
+    payload.pop("_ts", None)
+    payload.pop("padding", None)
+    return payload
+
+
+def apply_anti_dpi_padding(payload: dict, min_bytes: int = 384, max_bytes: int = 1536) -> dict:
+    """Attaches dynamic random noise padding to payload to mask packet size signature."""
+    if not isinstance(payload, dict):
+        return payload
+    payload["_pad"] = generate_random_padding(min_bytes, max_bytes)
+    payload["_ts"] = int(time.time() * 1000)
+    return payload
 
 
 def get_local_ips():
@@ -180,10 +205,31 @@ async def decode_frame(reader: asyncio.StreamReader):
     return opcode, data.decode("utf-8", errors="replace")
 
 
-async def broadcast_room(room_name: str, message_json: str, sender_writer=None):
-    """Broadcast a message frame ONLY to authenticated clients inside a specific room."""
+async def broadcast_room(room_name: str, message_data, sender_writer=None):
+    """
+    Broadcast a message frame ONLY to authenticated clients inside a specific room.
+    Applies Anti-DPI variable length random padding to eliminate packet-size fingerprints.
+    """
     if not room_name or room_name not in rooms:
         return
+
+    # Ensure Anti-DPI padding is present on broadcast payloads
+    if isinstance(message_data, dict):
+        apply_anti_dpi_padding(message_data)
+        message_json = json.dumps(message_data, ensure_ascii=False)
+    elif isinstance(message_data, str):
+        try:
+            parsed = json.loads(message_data)
+            if isinstance(parsed, dict) and "_pad" not in parsed:
+                apply_anti_dpi_padding(parsed)
+                message_json = json.dumps(parsed, ensure_ascii=False)
+            else:
+                message_json = message_data
+        except Exception:
+            message_json = message_data
+    else:
+        message_json = str(message_data)
+
     frame = encode_frame(message_json)
     dead_clients = set()
     for writer in list(rooms[room_name]["clients"]):
@@ -309,6 +355,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception:
                     payload = {}
 
+                # Strip Anti-DPI padding and telemetry noise from request body
+                strip_anti_dpi_padding(payload)
+
                 # REST API 1: /api/join (Authenticate or create room via HTTP)
                 if path == "/api/join":
                     raw_room = str(payload.get("room") or "").strip()
@@ -317,8 +366,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     room_id = raw_room.lower()
 
                     if not raw_room or not password:
-                        resp_json = json.dumps({"status": "error", "text": "نام اتاق و رمز عبور الزامی است."}, ensure_ascii=False)
-                        writer.write(make_http_json_response(400, resp_json))
+                        resp_dict = {"status": "error", "text": "نام اتاق و رمز عبور الزامی است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(400, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
                     else:
                         if room_id not in rooms:
@@ -340,20 +390,22 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             provided_hash = hash_password(password, salt)
                             if not hmac.compare_digest(provided_hash, expected_hash):
                                 print(f"⛔ [HTTP Auth Failed] '{sender}' wrong password for '{room_id}'")
-                                resp_json = json.dumps({"status": "error", "text": "رمز عبور اتاق نادرست است."}, ensure_ascii=False)
-                                writer.write(make_http_json_response(401, resp_json))
+                                resp_dict = {"status": "error", "text": "رمز عبور اتاق نادرست است."}
+                                apply_anti_dpi_padding(resp_dict)
+                                writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
                                 await writer.drain()
                                 writer.close()
                                 return
 
-                        resp_json = json.dumps({
+                        resp_dict = {
                             "status": "ok",
                             "room": raw_room,
                             "sender": sender,
                             "salt": rooms[room_id]["salt"],
                             "server_time": time.time()
-                        }, ensure_ascii=False)
-                        writer.write(make_http_json_response(200, resp_json))
+                        }
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
 
                 # REST API 2: /api/send (Send E2EE message via HTTP POST when WebSocket is blocked)
@@ -368,12 +420,14 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                     room_id = raw_room.lower()
                     if not raw_room or not password or not ciphertext:
-                        resp_json = json.dumps({"status": "error", "text": "پارامترهای درخواست ناقص است."}, ensure_ascii=False)
-                        writer.write(make_http_json_response(400, resp_json))
+                        resp_dict = {"status": "error", "text": "پارامترهای درخواست ناقص است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(400, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
                     elif room_id not in rooms:
-                        resp_json = json.dumps({"status": "error", "text": "اتاق یافت نشد."}, ensure_ascii=False)
-                        writer.write(make_http_json_response(404, resp_json))
+                        resp_dict = {"status": "error", "text": "اتاق یافت نشد."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(404, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
                     else:
                         # Verify room password
@@ -381,8 +435,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         expected_hash = rooms[room_id]["hash"]
                         provided_hash = hash_password(password, salt)
                         if not hmac.compare_digest(provided_hash, expected_hash):
-                            resp_json = json.dumps({"status": "error", "text": "رمز عبور نادرست است."}, ensure_ascii=False)
-                            writer.write(make_http_json_response(401, resp_json))
+                            resp_dict = {"status": "error", "text": "رمز عبور نادرست است."}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
                             await writer.drain()
                         else:
                             now = time.time()
@@ -405,7 +460,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             print(f"🛡️ [HTTP Tunnel Msg] [{raw_room}] [{sender}]: (E2EE Ciphertext {len(ciphertext)} bytes)")
 
                             # Broadcast to any active WebSocket connections in this room
-                            ws_broadcast = json.dumps({
+                            ws_broadcast = {
                                 "type": "chat",
                                 "id": msg_id,
                                 "room": rooms[room_id].get("name", raw_room),
@@ -414,14 +469,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "encrypted": encrypted,
                                 "time": time_str,
                                 "ts": now
-                            }, ensure_ascii=False)
+                            }
                             await broadcast_room(room_id, ws_broadcast)
 
-                            resp_json = json.dumps({
+                            resp_dict = {
                                 "status": "ok",
                                 "msgId": msg_id,
                                 "ts": now
-                            }, ensure_ascii=False)
+                            }
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                            await writer.drain()
                             writer.write(make_http_json_response(200, resp_json))
                             await writer.drain()
                 else:
@@ -445,27 +503,30 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                     room_id = raw_room.lower()
                     if not raw_room or not password or room_id not in rooms:
-                        resp_json = json.dumps({"status": "error", "text": "دسترسی غیرمجاز یا اتاق یافت نشد."}, ensure_ascii=False)
-                        writer.write(make_http_json_response(401, resp_json))
+                        resp_dict = {"status": "error", "text": "دسترسی غیرمجاز یا اتاق یافت نشد."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
                     else:
                         salt = rooms[room_id]["salt"]
                         expected_hash = rooms[room_id]["hash"]
                         provided_hash = hash_password(password, salt)
                         if not hmac.compare_digest(provided_hash, expected_hash):
-                            resp_json = json.dumps({"status": "error", "text": "رمز عبور نادرست است."}, ensure_ascii=False)
-                            writer.write(make_http_json_response(401, resp_json))
+                            resp_dict = {"status": "error", "text": "رمز عبور نادرست است."}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
                             await writer.drain()
                         else:
                             history = rooms[room_id].get("history", [])
                             new_msgs = [m for m in history if m.get("ts", 0) > since_ts]
-                            resp_json = json.dumps({
+                            resp_dict = {
                                 "status": "ok",
                                 "room": raw_room,
                                 "messages": new_msgs,
                                 "server_time": time.time()
-                            }, ensure_ascii=False)
-                            writer.write(make_http_json_response(200, resp_json))
+                            }
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
                             await writer.drain()
 
                     writer.close()
@@ -473,15 +534,25 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                 # Health and status checks
                 if path in ("/health", "/status", "/ping"):
-                    body = json.dumps({
+                    resp_dict = {
                         "status": "ok",
                         "service": "rakhssh-chat",
                         "version": VERSION,
                         "active_clients": len(clients),
                         "active_rooms": len(rooms),
-                        "features": ["e2ee_aes256", "dual_transport_tunnel", "history_buffer"],
+                        "features": [
+                            "e2ee_aes256",
+                            "dual_transport_tunnel",
+                            "anti_dpi_traffic_shaping",
+                            "random_packet_padding",
+                            "decoy_cover_traffic",
+                            "timing_jitter",
+                            "cloudflare_tunnel_compatible"
+                        ],
                         "timestamp": int(time.time()),
-                    }).encode("utf-8")
+                    }
+                    apply_anti_dpi_padding(resp_dict, 128, 512)
+                    body = json.dumps(resp_dict, ensure_ascii=False).encode("utf-8")
                     resp = (
                         "HTTP/1.1 200 OK\r\n"
                         "Content-Type: application/json; charset=utf-8\r\n"
@@ -566,12 +637,30 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception:
                     continue
 
+                # Strip Anti-DPI padding and telemetry noise from client payload
+                strip_anti_dpi_padding(payload)
                 msg_type = payload.get("type")
 
                 # Heartbeat Ping from Web/Android client
                 if msg_type == "ping":
-                    pong_resp = json.dumps({"type": "pong", "time": int(time.time())})
-                    writer.write(encode_frame(pong_resp))
+                    pong_resp = {
+                        "type": "pong",
+                        "time": int(time.time())
+                    }
+                    apply_anti_dpi_padding(pong_resp)
+                    writer.write(encode_frame(json.dumps(pong_resp)))
+                    await writer.drain()
+                    continue
+
+                # Anti-DPI Decoy / Cover Traffic from client (silent ack with random padding)
+                if msg_type in ("decoy", "telemetry"):
+                    ack_resp = {
+                        "type": "ack",
+                        "decoy": True,
+                        "time": int(time.time())
+                    }
+                    apply_anti_dpi_padding(ack_resp)
+                    writer.write(encode_frame(json.dumps(ack_resp)))
                     await writer.drain()
                     continue
 
@@ -582,20 +671,16 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     sender = str(payload.get("sender") or "").strip() or "کاربر"
 
                     if not raw_room:
-                        err = json.dumps({
-                            "type": "auth_error",
-                            "text": "نام اتاق نمی‌تواند خالی باشد."
-                        }, ensure_ascii=False)
-                        writer.write(encode_frame(err))
+                        err = {"type": "auth_error", "text": "نام اتاق نمی‌تواند خالی باشد."}
+                        apply_anti_dpi_padding(err)
+                        writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
                         await writer.drain()
                         continue
 
                     if not password:
-                        err = json.dumps({
-                            "type": "auth_error",
-                            "text": "رمز عبور اتاق الزامی است."
-                        }, ensure_ascii=False)
-                        writer.write(encode_frame(err))
+                        err = {"type": "auth_error", "text": "رمز عبور اتاق الزامی است."}
+                        apply_anti_dpi_padding(err)
+                        writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
                         await writer.drain()
                         continue
 
@@ -621,12 +706,13 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         provided_hash = hash_password(password, salt)
                         if not hmac.compare_digest(provided_hash, expected_hash):
                             print(f"⛔ [WS Auth Failed] '{sender}' wrong password for '{room_id}' from {peername[0]}")
-                            err = json.dumps({
+                            err = {
                                 "type": "auth_error",
                                 "room": raw_room,
                                 "text": "رمز عبور اتاق نادرست است! دسترسی غیرمجاز."
-                            }, ensure_ascii=False)
-                            writer.write(encode_frame(err))
+                            }
+                            apply_anti_dpi_padding(err)
+                            writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
                             await writer.drain()
                             continue
 
@@ -647,24 +733,26 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                     print(f"🔑 [WS Auth Success] '{sender}' joined room '{room_id}' (Members: {len(rooms[room_id]['clients'])})")
 
-                    success_resp = json.dumps({
+                    success_resp = {
                         "type": "auth_success",
                         "room": raw_room,
                         "sender": sender,
                         "text": f"با موفقیت به اتاق امن «{raw_room}» متصل شدید."
-                    }, ensure_ascii=False)
-                    writer.write(encode_frame(success_resp))
+                    }
+                    apply_anti_dpi_padding(success_resp)
+                    writer.write(encode_frame(json.dumps(success_resp, ensure_ascii=False)))
                     await writer.drain()
 
                     # Send recent history if available
                     history = rooms[room_id].get("history", [])
                     if history:
-                        hist_payload = json.dumps({
+                        hist_payload = {
                             "type": "history_sync",
                             "room": raw_room,
                             "messages": history[-50:],
-                        }, ensure_ascii=False)
-                        writer.write(encode_frame(hist_payload))
+                        }
+                        apply_anti_dpi_padding(hist_payload)
+                        writer.write(encode_frame(json.dumps(hist_payload, ensure_ascii=False)))
                         await writer.drain()
 
                     # Notify other members of this room ONLY
@@ -735,13 +823,14 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     # Strictly broadcast only to members of this room
                     await broadcast_room(current_room, out_msg, sender_writer=writer)
 
-                    # Send ACK back to sender
-                    ack = json.dumps({
+                    # Send ACK back to sender with Anti-DPI variable padding
+                    ack_dict = {
                         "type": "ack",
                         "msgId": msg_id,
                         "ts": now
-                    })
-                    writer.write(encode_frame(ack))
+                    }
+                    apply_anti_dpi_padding(ack_dict)
+                    writer.write(encode_frame(json.dumps(ack_dict)))
                     await writer.drain()
                     continue
 

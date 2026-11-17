@@ -66,32 +66,34 @@ def send_file(file_path, filename, caption, mime_type="application/octet-stream"
         print(f"Telegram error for {filename}: {e}")
         return False
 
-# 1. Dispatch Android APK v1.3.0
+# 1. Dispatch Android APK v1.4.0
 apk_caption = (
-    "📱 رخش چت نسخه ۱.۳.۰ (Rakhssh Chat v1.3.0)\n\n"
-    "🛡️ قابلیت‌های جدید ضد فایروال و امنیت پیشرفته:\n"
-    "🔒 ۱. رمزنگاری سرتاسری AES-256 (E2EE): تمامی پیام‌ها قبل از ارسال در گوشی مبدأ رمزگذاری می‌شوند. فایروال یا سرور هیچ دسترسی به متن پیام ندارند.\n"
-    "🛡️ ۲. تونل ضد فایروال (Dual-Transport Safe Tunnel): در صورت مسدود بودن وب‌سوکت توسط فایروال سختگیر موبایل، برنامه به طور خودکار به درخواست‌های امن HTTP جابجا شده و پیام‌ها بدون قطعی می‌رسند.\n"
-    "📦 ۳. صف تحویل تضمینی (Zero-Loss Queue): در صورت قطعی لحظه‌ای اتصال موبایل، پیام‌ها در صف نگهداری و پس از اتصال مجدد بدون نیاز به تلاش کاربر ارسال می‌شوند.\n"
-    "🔄 ۴. همگام‌سازی تاریخچه پیام‌ها: بازیابی پیام‌های ارسال‌شده در گروه هنگام آفلاین بودن گوشی."
+    "📱 رخش چت نسخه ۱.۴.۰ (Rakhssh Chat v1.4.0)\n\n"
+    "🛡️ قابلیت‌های جدید ضد فیلترینگ هوشمند و عبور از بازرسی عمیق پکت (Anti-DPI):\n"
+    "📦 ۱. پدینگ نویز تصادفی (Random Packet Padding): اضافه کردن بایت‌های نویز با طول کاملاً متغیر (۴۰۰ تا ۱۶۰۰ بایت) به بسته‌های چت تا الگوی سایز پکت‌های ریز شناسایی و مسدود نشود.\n"
+    "⏱️ ۲. ناهماهنگی زمانی و هارت‌بیت پویا (Timing Jitter): جلوگیری از ریتم‌های ثابت زمانی در تبادل داده و فریب سیستم‌های تحلیل رفتار ترافیک.\n"
+    "👻 ۳. ترافیک پوششی در زمان سکوت (Decoy Chaff): ارسال بسته‌های نامحسوس و خنثی در زمان‌های عدم ارسال پیام، تا الگوی شروع/پایان چت تشخیص داده نشود.\n"
+    "☁️ ۴. یکپارچه‌سازی با کلودفلر تونل (Cloudflare WSS 443): عبور از پورت استاندارد ۴۴۳ با گواهی معتبر TLS 1.3 و پنهان‌سازی کامل IP اصلی سرور.\n"
+    "🔒 ۵. رمزنگاری سرتاسری AES-256 و تونل دومنظوره HTTP/WS."
 )
 send_file(
-    os.path.expanduser("~/agent-work/chat-v1.3.0.apk"),
-    "chat-v1.3.0.apk",
+    os.path.expanduser("~/agent-work/chat-v1.4.0.apk"),
+    "chat-v1.4.0.apk",
     apk_caption,
     "application/vnd.android.package-archive"
 )
 
-# 2. Dispatch Server Installer v1.3.0
+# 2. Dispatch Server Installer v1.4.0
 installer_caption = (
-    "🚀 اسکریپت نصب سرور چت نسخه ۱.۳.۰ (Ubuntu Auto-Installer v1.3.0)\n\n"
-    "• پشتیبانی کامل از تونل ضد فایروال HTTP REST (/api/send و /api/poll) در کنار WebSocket\n"
-    "• بافر تاریخچه پیام‌های رمزگذاری‌شده در هر اتاق برای جلوگیری از حذف یا گم شدن پیام‌ها\n"
-    "• دستور نصب روی سرور: sudo bash install.sh"
+    "🚀 اسکریپت نصب سرور چت نسخه ۱.۴.۰ (Ubuntu Auto-Installer v1.4.0)\n\n"
+    "• مجهز به موتور Anti-DPI Traffic Shaping و تزریق پدینگ تصادفی به تمامی پاسخ‌ها\n"
+    "• پشتیبانی کامل از کلودفلر تونل (Cloudflare Quick Tunnel) برای ارائه WSS روی پورت ۴۴۳ بدون نیاز به باز کردن پورت در فایروال سرور\n"
+    "• دستور اجرای تونل کلودفلر: ~/agent-work/projects/chat/server/tunnel.sh start\n"
+    "• دستور نصب سرور: sudo bash install.sh"
 )
 send_file(
-    os.path.expanduser("~/agent-work/install-v1.3.0.sh"),
-    "install-v1.3.0.sh",
+    os.path.expanduser("~/agent-work/install-v1.4.0.sh"),
+    "install-v1.4.0.sh",
     installer_caption,
     "text/x-shellscript"
 )

@@ -665,6 +665,109 @@ body {
   font-family: inherit;
 }
 
+.anti-dpi-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.15);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  transition: all 0.3s ease;
+}
+
+.anti-dpi-pill.disabled {
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  opacity: 0.6;
+}
+
+.presets-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label-sm {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-light);
+}
+
+.preset-buttons-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.preset-btn {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-light);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+  text-align: center;
+}
+
+.preset-btn:hover, .preset-btn:active {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+}
+
+.anti-dpi-section {
+  background: rgba(167, 139, 250, 0.08);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.anti-dpi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.anti-dpi-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #c4b5fd;
+}
+
+.anti-dpi-status-badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: 9999px;
+  padding: 1px 6px;
+}
+
+.anti-dpi-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: #a78bfa;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px 10px;
+  border-radius: 6px;
+  direction: rtl;
+}
+
 .hidden {
   display: none !important;
 }

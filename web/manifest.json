@@ -1,7 +1,7 @@
 {
   "name": "رخش چت | Rakhssh Chat",
   "short_name": "Rakhssh Chat",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "description": "کلاینت چت مستقل، سبک و امن با اتاق‌های رمزگذاری‌شده و نوتیفیکیشن صفحه قفل",
   "start_url": "/",
   "scope": "/",

@@ -42,8 +42,9 @@
       <div class="header-center">
         <div class="app-title">
           <span>رخش چت</span>
-          <span class="version-tag">v1.3.0</span>
+          <span class="version-tag">v1.4.0</span>
           <span id="transportBadge" class="transport-pill ws" title="روش ارتباط و انتقال داده">⚡ وب‌سوکت</span>
+          <span id="antiDpiBadge" class="anti-dpi-pill active" title="سپر ضد DPI: پدینگ تصادفی و فرکانس نامنظم پکت‌ها فعال است">🛡️ ضد DPI</span>
         </div>
         <div class="connection-status">
           <span id="statusIndicator" class="status-dot disconnected"></span>
@@ -149,7 +150,7 @@
 
         <div class="gate-security-banner">
           <span class="sec-icon">🛡️</span>
-          <span>رمزنگاری سرتاسری AES-256 + تونل ضد فایروال (تحویل تضمینی پیام‌ها)</span>
+          <span>رمزنگاری AES-256 + پدینگ تصادفی ضد DPI + تونل دومنظوره ضد فایروال</span>
         </div>
 
         <div class="gate-footer-note">
@@ -199,13 +200,62 @@
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label for="modalServerUrl">آدرس سرور WebSocket:</label>
+            <label for="modalServerUrl">آدرس سرور WebSocket / تونل امن:</label>
             <input 
               type="text" 
               id="modalServerUrl" 
               dir="ltr"
-              placeholder="ws://193.168.175.227:8765" 
+              placeholder="ws://193.168.175.227:8765 یا wss://..." 
             />
+          </div>
+
+          <!-- Connection Mode Presets -->
+          <div class="presets-block">
+            <span class="field-label-sm">الگوهای اتصال ضد مسدودسازی:</span>
+            <div class="preset-buttons-grid">
+              <button type="button" id="btnPresetDirect" class="preset-btn">
+                ⚡ سرور مستقیم (:8765)
+              </button>
+              <button type="button" id="btnPresetCfTunnel" class="preset-btn">
+                ☁️ کلودفلر تونل (:443)
+              </button>
+            </div>
+            <small class="field-hint">در صورت اختلال شدید یا فیلترینگ پورت، از کلودفلر تونل یا VPN فعال استفاده کنید.</small>
+          </div>
+
+          <!-- Anti-DPI & Traffic Shaping Section -->
+          <div class="anti-dpi-section">
+            <div class="anti-dpi-header">
+              <span class="anti-dpi-title">🛡️ سپر ضد DPI و تغییر شکل ترافیک (Traffic Shaping)</span>
+              <span class="anti-dpi-status-badge">فعال</span>
+            </div>
+            <div class="form-group checkbox-group">
+              <label>
+                <input type="checkbox" id="antiDpiToggle" checked />
+                پدینگ نویز تصادفی (Random Padding) برای مخفی‌سازی سایز پکت
+              </label>
+            </div>
+            <div class="form-group checkbox-group">
+              <label>
+                <input type="checkbox" id="decoyChaffToggle" checked />
+                ارسال بسته‌های پوششی (Decoy Chaff) در زمان سکوت کاربر
+              </label>
+            </div>
+            <div class="anti-dpi-metrics">
+              <span>● سایز هر بسته: ۴۰۰ تا ۱۶۰۰ بایت تصادفی</span>
+              <span>● ناهماهنگی زمانی هارت‌بیت: ۱۴ تا ۲۸ ثانیه (Jittered)</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="modalCleanIp">آی‌پی تمیز کلودفلر (Clean IP اختیاری):</label>
+            <input 
+              type="text" 
+              id="modalCleanIp" 
+              dir="ltr"
+              placeholder="مثلاً: 104.16.132.229 یا خالی" 
+            />
+            <small class="field-hint">تنها در شرایط اختلال DNS/SNI برای کاربران داخل ایران استفاده شود.</small>
           </div>
 
           <div class="form-group checkbox-group">

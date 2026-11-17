@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🚀 Rakhssh Chat Server v1.3.0 - Ubuntu Auto Installer & Systemd Service Setup
+# 🚀 Rakhssh Chat Server v1.4.0 - Ubuntu Auto Installer & Systemd Service Setup
 # Self-contained, automated installer for Ubuntu 20.04 / 22.04 / 24.04 LTS.
 # Supports Android (chat.apk), iOS (PWA Web App), and Web Browsers.
 #
@@ -14,7 +14,7 @@
 set -e
 
 # Version
-INSTALLER_VERSION="1.3.0"
+INSTALLER_VERSION="1.4.0"
 
 # ANSI Color codes
 C_RESET='\033[0m'
@@ -150,7 +150,7 @@ import time
 import urllib.parse
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 # Connected WebSocket clients
 clients = set()
@@ -213,6 +213,31 @@ FALLBACK_HTML = """<!DOCTYPE html>
 def hash_password(password: str, salt: str) -> str:
     """Compute cryptographic hash of password using salt."""
     return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+
+
+def generate_random_padding(min_bytes: int = 384, max_bytes: int = 1536) -> str:
+    """Generates variable-length random noise string for Anti-DPI packet shaping."""
+    length = secrets.randbelow(max(1, max_bytes - min_bytes + 1)) + min_bytes
+    return secrets.token_urlsafe(length)[:length]
+
+
+def strip_anti_dpi_padding(payload: dict) -> dict:
+    """Safely removes Anti-DPI padding and telemetry noise from message dict."""
+    if not isinstance(payload, dict):
+        return payload
+    payload.pop("_pad", None)
+    payload.pop("_ts", None)
+    payload.pop("padding", None)
+    return payload
+
+
+def apply_anti_dpi_padding(payload: dict, min_bytes: int = 384, max_bytes: int = 1536) -> dict:
+    """Attaches dynamic random noise padding to payload to mask packet size signature."""
+    if not isinstance(payload, dict):
+        return payload
+    payload["_pad"] = generate_random_padding(min_bytes, max_bytes)
+    payload["_ts"] = int(time.time() * 1000)
+    return payload
 
 
 def get_local_ips():
@@ -299,10 +324,31 @@ async def decode_frame(reader: asyncio.StreamReader):
     return opcode, data.decode("utf-8", errors="replace")
 
 
-async def broadcast_room(room_name: str, message_json: str, sender_writer=None):
-    """Broadcast a message frame ONLY to authenticated clients inside a specific room."""
+async def broadcast_room(room_name: str, message_data, sender_writer=None):
+    """
+    Broadcast a message frame ONLY to authenticated clients inside a specific room.
+    Applies Anti-DPI variable length random padding to eliminate packet-size fingerprints.
+    """
     if not room_name or room_name not in rooms:
         return
+
+    # Ensure Anti-DPI padding is present on broadcast payloads
+    if isinstance(message_data, dict):
+        apply_anti_dpi_padding(message_data)
+        message_json = json.dumps(message_data, ensure_ascii=False)
+    elif isinstance(message_data, str):
+        try:
+            parsed = json.loads(message_data)
+            if isinstance(parsed, dict) and "_pad" not in parsed:
+                apply_anti_dpi_padding(parsed)
+                message_json = json.dumps(parsed, ensure_ascii=False)
+            else:
+                message_json = message_data
+        except Exception:
+            message_json = message_data
+    else:
+        message_json = str(message_data)
+
     frame = encode_frame(message_json)
     dead_clients = set()
     for writer in list(rooms[room_name]["clients"]):
@@ -428,6 +474,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception:
                     payload = {}
 
+                # Strip Anti-DPI padding and telemetry noise from request body
+                strip_anti_dpi_padding(payload)
+
                 # REST API 1: /api/join (Authenticate or create room via HTTP)
                 if path == "/api/join":
                     raw_room = str(payload.get("room") or "").strip()
@@ -436,8 +485,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     room_id = raw_room.lower()
 
                     if not raw_room or not password:
-                        resp_json = json.dumps({"status": "error", "text": "نام اتاق و رمز عبور الزامی است."}, ensure_ascii=False)
-                        writer.write(make_http_json_response(400, resp_json))
+                        resp_dict = {"status": "error", "text": "نام اتاق و رمز عبور الزامی است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(400, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
                     else:
                         if room_id not in rooms:
@@ -459,20 +509,22 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             provided_hash = hash_password(password, salt)
                             if not hmac.compare_digest(provided_hash, expected_hash):
                                 print(f"⛔ [HTTP Auth Failed] '{sender}' wrong password for '{room_id}'")
-                                resp_json = json.dumps({"status": "error", "text": "رمز عبور اتاق نادرست است."}, ensure_ascii=False)
-                                writer.write(make_http_json_response(401, resp_json))
+                                resp_dict = {"status": "error", "text": "رمز عبور اتاق نادرست است."}
+                                apply_anti_dpi_padding(resp_dict)
+                                writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
                                 await writer.drain()
                                 writer.close()
                                 return
 
-                        resp_json = json.dumps({
+                        resp_dict = {
                             "status": "ok",
                             "room": raw_room,
                             "sender": sender,
                             "salt": rooms[room_id]["salt"],
                             "server_time": time.time()
-                        }, ensure_ascii=False)
-                        writer.write(make_http_json_response(200, resp_json))
+                        }
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
 
                 # REST API 2: /api/send (Send E2EE message via HTTP POST when WebSocket is blocked)
@@ -487,12 +539,14 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                     room_id = raw_room.lower()
                     if not raw_room or not password or not ciphertext:
-                        resp_json = json.dumps({"status": "error", "text": "پارامترهای درخواست ناقص است."}, ensure_ascii=False)
-                        writer.write(make_http_json_response(400, resp_json))
+                        resp_dict = {"status": "error", "text": "پارامترهای درخواست ناقص است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(400, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
                     elif room_id not in rooms:
-                        resp_json = json.dumps({"status": "error", "text": "اتاق یافت نشد."}, ensure_ascii=False)
-                        writer.write(make_http_json_response(404, resp_json))
+                        resp_dict = {"status": "error", "text": "اتاق یافت نشد."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(404, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
                     else:
                         # Verify room password
@@ -500,8 +554,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         expected_hash = rooms[room_id]["hash"]
                         provided_hash = hash_password(password, salt)
                         if not hmac.compare_digest(provided_hash, expected_hash):
-                            resp_json = json.dumps({"status": "error", "text": "رمز عبور نادرست است."}, ensure_ascii=False)
-                            writer.write(make_http_json_response(401, resp_json))
+                            resp_dict = {"status": "error", "text": "رمز عبور نادرست است."}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
                             await writer.drain()
                         else:
                             now = time.time()
@@ -524,7 +579,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             print(f"🛡️ [HTTP Tunnel Msg] [{raw_room}] [{sender}]: (E2EE Ciphertext {len(ciphertext)} bytes)")
 
                             # Broadcast to any active WebSocket connections in this room
-                            ws_broadcast = json.dumps({
+                            ws_broadcast = {
                                 "type": "chat",
                                 "id": msg_id,
                                 "room": rooms[room_id].get("name", raw_room),
@@ -533,14 +588,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "encrypted": encrypted,
                                 "time": time_str,
                                 "ts": now
-                            }, ensure_ascii=False)
+                            }
                             await broadcast_room(room_id, ws_broadcast)
 
-                            resp_json = json.dumps({
+                            resp_dict = {
                                 "status": "ok",
                                 "msgId": msg_id,
                                 "ts": now
-                            }, ensure_ascii=False)
+                            }
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                            await writer.drain()
                             writer.write(make_http_json_response(200, resp_json))
                             await writer.drain()
                 else:
@@ -564,27 +622,30 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                     room_id = raw_room.lower()
                     if not raw_room or not password or room_id not in rooms:
-                        resp_json = json.dumps({"status": "error", "text": "دسترسی غیرمجاز یا اتاق یافت نشد."}, ensure_ascii=False)
-                        writer.write(make_http_json_response(401, resp_json))
+                        resp_dict = {"status": "error", "text": "دسترسی غیرمجاز یا اتاق یافت نشد."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
                     else:
                         salt = rooms[room_id]["salt"]
                         expected_hash = rooms[room_id]["hash"]
                         provided_hash = hash_password(password, salt)
                         if not hmac.compare_digest(provided_hash, expected_hash):
-                            resp_json = json.dumps({"status": "error", "text": "رمز عبور نادرست است."}, ensure_ascii=False)
-                            writer.write(make_http_json_response(401, resp_json))
+                            resp_dict = {"status": "error", "text": "رمز عبور نادرست است."}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
                             await writer.drain()
                         else:
                             history = rooms[room_id].get("history", [])
                             new_msgs = [m for m in history if m.get("ts", 0) > since_ts]
-                            resp_json = json.dumps({
+                            resp_dict = {
                                 "status": "ok",
                                 "room": raw_room,
                                 "messages": new_msgs,
                                 "server_time": time.time()
-                            }, ensure_ascii=False)
-                            writer.write(make_http_json_response(200, resp_json))
+                            }
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
                             await writer.drain()
 
                     writer.close()
@@ -592,15 +653,25 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                 # Health and status checks
                 if path in ("/health", "/status", "/ping"):
-                    body = json.dumps({
+                    resp_dict = {
                         "status": "ok",
                         "service": "rakhssh-chat",
                         "version": VERSION,
                         "active_clients": len(clients),
                         "active_rooms": len(rooms),
-                        "features": ["e2ee_aes256", "dual_transport_tunnel", "history_buffer"],
+                        "features": [
+                            "e2ee_aes256",
+                            "dual_transport_tunnel",
+                            "anti_dpi_traffic_shaping",
+                            "random_packet_padding",
+                            "decoy_cover_traffic",
+                            "timing_jitter",
+                            "cloudflare_tunnel_compatible"
+                        ],
                         "timestamp": int(time.time()),
-                    }).encode("utf-8")
+                    }
+                    apply_anti_dpi_padding(resp_dict, 128, 512)
+                    body = json.dumps(resp_dict, ensure_ascii=False).encode("utf-8")
                     resp = (
                         "HTTP/1.1 200 OK\r\n"
                         "Content-Type: application/json; charset=utf-8\r\n"
@@ -685,12 +756,30 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception:
                     continue
 
+                # Strip Anti-DPI padding and telemetry noise from client payload
+                strip_anti_dpi_padding(payload)
                 msg_type = payload.get("type")
 
                 # Heartbeat Ping from Web/Android client
                 if msg_type == "ping":
-                    pong_resp = json.dumps({"type": "pong", "time": int(time.time())})
-                    writer.write(encode_frame(pong_resp))
+                    pong_resp = {
+                        "type": "pong",
+                        "time": int(time.time())
+                    }
+                    apply_anti_dpi_padding(pong_resp)
+                    writer.write(encode_frame(json.dumps(pong_resp)))
+                    await writer.drain()
+                    continue
+
+                # Anti-DPI Decoy / Cover Traffic from client (silent ack with random padding)
+                if msg_type in ("decoy", "telemetry"):
+                    ack_resp = {
+                        "type": "ack",
+                        "decoy": True,
+                        "time": int(time.time())
+                    }
+                    apply_anti_dpi_padding(ack_resp)
+                    writer.write(encode_frame(json.dumps(ack_resp)))
                     await writer.drain()
                     continue
 
@@ -701,20 +790,16 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     sender = str(payload.get("sender") or "").strip() or "کاربر"
 
                     if not raw_room:
-                        err = json.dumps({
-                            "type": "auth_error",
-                            "text": "نام اتاق نمی‌تواند خالی باشد."
-                        }, ensure_ascii=False)
-                        writer.write(encode_frame(err))
+                        err = {"type": "auth_error", "text": "نام اتاق نمی‌تواند خالی باشد."}
+                        apply_anti_dpi_padding(err)
+                        writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
                         await writer.drain()
                         continue
 
                     if not password:
-                        err = json.dumps({
-                            "type": "auth_error",
-                            "text": "رمز عبور اتاق الزامی است."
-                        }, ensure_ascii=False)
-                        writer.write(encode_frame(err))
+                        err = {"type": "auth_error", "text": "رمز عبور اتاق الزامی است."}
+                        apply_anti_dpi_padding(err)
+                        writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
                         await writer.drain()
                         continue
 
@@ -740,12 +825,13 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         provided_hash = hash_password(password, salt)
                         if not hmac.compare_digest(provided_hash, expected_hash):
                             print(f"⛔ [WS Auth Failed] '{sender}' wrong password for '{room_id}' from {peername[0]}")
-                            err = json.dumps({
+                            err = {
                                 "type": "auth_error",
                                 "room": raw_room,
                                 "text": "رمز عبور اتاق نادرست است! دسترسی غیرمجاز."
-                            }, ensure_ascii=False)
-                            writer.write(encode_frame(err))
+                            }
+                            apply_anti_dpi_padding(err)
+                            writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
                             await writer.drain()
                             continue
 
@@ -766,24 +852,26 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                     print(f"🔑 [WS Auth Success] '{sender}' joined room '{room_id}' (Members: {len(rooms[room_id]['clients'])})")
 
-                    success_resp = json.dumps({
+                    success_resp = {
                         "type": "auth_success",
                         "room": raw_room,
                         "sender": sender,
                         "text": f"با موفقیت به اتاق امن «{raw_room}» متصل شدید."
-                    }, ensure_ascii=False)
-                    writer.write(encode_frame(success_resp))
+                    }
+                    apply_anti_dpi_padding(success_resp)
+                    writer.write(encode_frame(json.dumps(success_resp, ensure_ascii=False)))
                     await writer.drain()
 
                     # Send recent history if available
                     history = rooms[room_id].get("history", [])
                     if history:
-                        hist_payload = json.dumps({
+                        hist_payload = {
                             "type": "history_sync",
                             "room": raw_room,
                             "messages": history[-50:],
-                        }, ensure_ascii=False)
-                        writer.write(encode_frame(hist_payload))
+                        }
+                        apply_anti_dpi_padding(hist_payload)
+                        writer.write(encode_frame(json.dumps(hist_payload, ensure_ascii=False)))
                         await writer.drain()
 
                     # Notify other members of this room ONLY
@@ -854,13 +942,14 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     # Strictly broadcast only to members of this room
                     await broadcast_room(current_room, out_msg, sender_writer=writer)
 
-                    # Send ACK back to sender
-                    ack = json.dumps({
+                    # Send ACK back to sender with Anti-DPI variable padding
+                    ack_dict = {
                         "type": "ack",
                         "msgId": msg_id,
                         "ts": now
-                    })
-                    writer.write(encode_frame(ack))
+                    }
+                    apply_anti_dpi_padding(ack_dict)
+                    writer.write(encode_frame(json.dumps(ack_dict)))
                     await writer.drain()
                     continue
 
@@ -1026,8 +1115,9 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
       <div class="header-center">
         <div class="app-title">
           <span>رخش چت</span>
-          <span class="version-tag">v1.3.0</span>
+          <span class="version-tag">v1.4.0</span>
           <span id="transportBadge" class="transport-pill ws" title="روش ارتباط و انتقال داده">⚡ وب‌سوکت</span>
+          <span id="antiDpiBadge" class="anti-dpi-pill active" title="سپر ضد DPI: پدینگ تصادفی و فرکانس نامنظم پکت‌ها فعال است">🛡️ ضد DPI</span>
         </div>
         <div class="connection-status">
           <span id="statusIndicator" class="status-dot disconnected"></span>
@@ -1133,7 +1223,7 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
 
         <div class="gate-security-banner">
           <span class="sec-icon">🛡️</span>
-          <span>رمزنگاری سرتاسری AES-256 + تونل ضد فایروال (تحویل تضمینی پیام‌ها)</span>
+          <span>رمزنگاری AES-256 + پدینگ تصادفی ضد DPI + تونل دومنظوره ضد فایروال</span>
         </div>
 
         <div class="gate-footer-note">
@@ -1183,13 +1273,62 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label for="modalServerUrl">آدرس سرور WebSocket:</label>
+            <label for="modalServerUrl">آدرس سرور WebSocket / تونل امن:</label>
             <input 
               type="text" 
               id="modalServerUrl" 
               dir="ltr"
-              placeholder="ws://193.168.175.227:8765" 
+              placeholder="ws://193.168.175.227:8765 یا wss://..." 
             />
+          </div>
+
+          <!-- Connection Mode Presets -->
+          <div class="presets-block">
+            <span class="field-label-sm">الگوهای اتصال ضد مسدودسازی:</span>
+            <div class="preset-buttons-grid">
+              <button type="button" id="btnPresetDirect" class="preset-btn">
+                ⚡ سرور مستقیم (:8765)
+              </button>
+              <button type="button" id="btnPresetCfTunnel" class="preset-btn">
+                ☁️ کلودفلر تونل (:443)
+              </button>
+            </div>
+            <small class="field-hint">در صورت اختلال شدید یا فیلترینگ پورت، از کلودفلر تونل یا VPN فعال استفاده کنید.</small>
+          </div>
+
+          <!-- Anti-DPI & Traffic Shaping Section -->
+          <div class="anti-dpi-section">
+            <div class="anti-dpi-header">
+              <span class="anti-dpi-title">🛡️ سپر ضد DPI و تغییر شکل ترافیک (Traffic Shaping)</span>
+              <span class="anti-dpi-status-badge">فعال</span>
+            </div>
+            <div class="form-group checkbox-group">
+              <label>
+                <input type="checkbox" id="antiDpiToggle" checked />
+                پدینگ نویز تصادفی (Random Padding) برای مخفی‌سازی سایز پکت
+              </label>
+            </div>
+            <div class="form-group checkbox-group">
+              <label>
+                <input type="checkbox" id="decoyChaffToggle" checked />
+                ارسال بسته‌های پوششی (Decoy Chaff) در زمان سکوت کاربر
+              </label>
+            </div>
+            <div class="anti-dpi-metrics">
+              <span>● سایز هر بسته: ۴۰۰ تا ۱۶۰۰ بایت تصادفی</span>
+              <span>● ناهماهنگی زمانی هارت‌بیت: ۱۴ تا ۲۸ ثانیه (Jittered)</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="modalCleanIp">آی‌پی تمیز کلودفلر (Clean IP اختیاری):</label>
+            <input 
+              type="text" 
+              id="modalCleanIp" 
+              dir="ltr"
+              placeholder="مثلاً: 104.16.132.229 یا خالی" 
+            />
+            <small class="field-hint">تنها در شرایط اختلال DNS/SNI برای کاربران داخل ایران استفاده شود.</small>
           </div>
 
           <div class="form-group checkbox-group">
@@ -1900,6 +2039,109 @@ body {
   font-family: inherit;
 }
 
+.anti-dpi-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.15);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  transition: all 0.3s ease;
+}
+
+.anti-dpi-pill.disabled {
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  opacity: 0.6;
+}
+
+.presets-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label-sm {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-light);
+}
+
+.preset-buttons-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.preset-btn {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-light);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+  text-align: center;
+}
+
+.preset-btn:hover, .preset-btn:active {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+}
+
+.anti-dpi-section {
+  background: rgba(167, 139, 250, 0.08);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.anti-dpi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.anti-dpi-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #c4b5fd;
+}
+
+.anti-dpi-status-badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: 9999px;
+  padding: 1px 6px;
+}
+
+.anti-dpi-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: #a78bfa;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px 10px;
+  border-radius: 6px;
+  direction: rtl;
+}
+
 .hidden {
   display: none !important;
 }
@@ -1924,6 +2166,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const roomStatusBadge = document.getElementById("roomStatusBadge");
   const currentRoomDisplay = document.getElementById("currentRoomDisplay");
   const transportBadge = document.getElementById("transportBadge");
+  const antiDpiBadge = document.getElementById("antiDpiBadge");
   const btnSettings = document.getElementById("btnSettings");
   const btnLeaveRoom = document.getElementById("btnLeaveRoom");
   const btnNotification = document.getElementById("btnNotification");
@@ -1955,6 +2198,11 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const settingsModal = document.getElementById("settingsModal");
   const btnCloseSettings = document.getElementById("btnCloseSettings");
   const modalServerUrl = document.getElementById("modalServerUrl");
+  const modalCleanIp = document.getElementById("modalCleanIp");
+  const antiDpiToggle = document.getElementById("antiDpiToggle");
+  const decoyChaffToggle = document.getElementById("decoyChaffToggle");
+  const btnPresetDirect = document.getElementById("btnPresetDirect");
+  const btnPresetCfTunnel = document.getElementById("btnPresetCfTunnel");
   const autoReconnectInput = document.getElementById("autoReconnect");
   const keepCredentialsInput = document.getElementById("keepCredentials");
   const btnTestNotif = document.getElementById("btnTestNotif");
@@ -1964,7 +2212,8 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   // Application State
   let ws = null;
   let wsHandshakeTimer = null;
-  let heartbeatTimer = null;
+  let jitteredPingTimer = null;
+  let decoyChaffTimer = null;
   let reconnectTimer = null;
   let httpPollTimer = null;
   let queueRetryTimer = null;
@@ -1979,11 +2228,15 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     room: "",
     password: "",
     serverUrl: "",
+    cleanIp: "",
+    antiDpi: true,
+    decoyChaff: true,
     autoReconnect: true,
     keepCredentials: true,
     isAuthenticated: false,
     transportMode: "ws", // "ws" | "http"
     lastSyncTimestamp: 0.0,
+    lastActivityTime: Date.now(),
     outgoingQueue: [],
     seenMessageIds: new Set(),
   };
@@ -2002,6 +2255,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   if (savedConfig.nickname) state.nickname = savedConfig.nickname;
   if (savedConfig.room) state.room = savedConfig.room;
   if (savedConfig.password) state.password = savedConfig.password;
+  if (savedConfig.cleanIp) state.cleanIp = savedConfig.cleanIp;
+  if (savedConfig.antiDpi !== undefined) state.antiDpi = savedConfig.antiDpi;
+  if (savedConfig.decoyChaff !== undefined) state.decoyChaff = savedConfig.decoyChaff;
   if (savedConfig.autoReconnect !== undefined) state.autoReconnect = savedConfig.autoReconnect;
   if (savedConfig.keepCredentials !== undefined) state.keepCredentials = savedConfig.keepCredentials;
 
@@ -2011,6 +2267,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   gateRoomPassword.value = state.password || "";
   serverUrlInput.value = state.serverUrl;
   modalServerUrl.value = state.serverUrl;
+  if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
+  if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
+  if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
   autoReconnectInput.checked = state.autoReconnect;
   keepCredentialsInput.checked = state.keepCredentials;
 
@@ -2018,6 +2277,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   function persistSettings() {
     const dataToSave = {
       serverUrl: state.serverUrl,
+      cleanIp: state.cleanIp,
+      antiDpi: state.antiDpi,
+      decoyChaff: state.decoyChaff,
       nickname: state.nickname,
       autoReconnect: state.autoReconnect,
       keepCredentials: state.keepCredentials,
@@ -2103,6 +2365,85 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     } catch (err) {
       return null;
     }
+  }
+
+  // ==========================================================================
+  // Anti-DPI & Traffic Shaping Engine (Random Noise Padding & Jitter)
+  // ==========================================================================
+  function generateRandomNoise(minLen = 400, maxLen = 1600) {
+    const len = Math.floor(minLen + Math.random() * (maxLen - minLen));
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_~";
+    let str = "";
+    for (let i = 0; i < len; i++) {
+      str += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return str;
+  }
+
+  function wrapAntiDpi(payload) {
+    state.lastActivityTime = Date.now();
+    if (state.antiDpi && payload && typeof payload === "object") {
+      payload._pad = generateRandomNoise(400, 1600);
+      payload._ts = Date.now();
+    }
+    return payload;
+  }
+
+  function unwrapAntiDpi(payload) {
+    if (payload && typeof payload === "object") {
+      delete payload._pad;
+      delete payload._ts;
+      delete payload.padding;
+    }
+    return payload;
+  }
+
+  function updateAntiDpiBadge() {
+    if (!antiDpiBadge) return;
+    if (state.antiDpi) {
+      antiDpiBadge.classList.remove("disabled");
+      antiDpiBadge.classList.add("active");
+      antiDpiBadge.textContent = "🛡️ ضد DPI";
+      antiDpiBadge.title = "سپر ضد DPI: پدینگ تصادفی بسته (۴۰۰-۱۶۰۰ بایت) و فرکانس زمانی نامنظم فعال است";
+    } else {
+      antiDpiBadge.classList.remove("active");
+      antiDpiBadge.classList.add("disabled");
+      antiDpiBadge.textContent = "🛡️ بدون ضد DPI";
+      antiDpiBadge.title = "سپر ضد DPI غیرفعال است";
+    }
+  }
+
+  function startJitteredPingLoop() {
+    if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    // Dynamic Jitter: between 14 and 28 seconds (breaks periodic timing fingerprints)
+    const delay = Math.floor(14000 + Math.random() * 14000);
+    jitteredPingTimer = setTimeout(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(wrapAntiDpi({ type: "ping" })));
+        } catch (e) {}
+      }
+      startJitteredPingLoop();
+    }, delay);
+  }
+
+  function startDecoyChaffLoop() {
+    clearInterval(decoyChaffTimer);
+    decoyChaffTimer = setInterval(() => {
+      if (!state.decoyChaff || !state.isAuthenticated) return;
+      const idleSeconds = (Date.now() - state.lastActivityTime) / 1000;
+      // If idle for over 35 seconds, send covert decoy traffic
+      if (idleSeconds >= 35) {
+        state.lastActivityTime = Date.now();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify(wrapAntiDpi({ type: "decoy" })));
+          } catch (e) {}
+        }
+      }
+    }, 10000);
   }
 
   // ==========================================================================
@@ -2349,10 +2690,10 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     for (const item of pending) {
       let sentSuccess = false;
 
-      // Mode 1: WebSocket Send
+      // Mode 1: WebSocket Send with Anti-DPI Traffic Shaping
       if (state.transportMode === "ws" && ws && ws.readyState === WebSocket.OPEN) {
         try {
-          ws.send(JSON.stringify({
+          const packet = wrapAntiDpi({
             type: "chat",
             msgId: item.msgId,
             room: state.room,
@@ -2360,7 +2701,8 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
             ciphertext: item.ciphertext,
             encrypted: item.encrypted,
             time: item.time,
-          }));
+          });
+          ws.send(JSON.stringify(packet));
           sentSuccess = true;
           markMessageDelivered(item.msgId);
         } catch (e) {
@@ -2375,7 +2717,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
           const res = await fetch(httpUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+            body: JSON.stringify(wrapAntiDpi({
               room: state.room,
               password: state.password,
               sender: state.nickname,
@@ -2383,7 +2725,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
               encrypted: item.encrypted,
               msgId: item.msgId,
               time: item.time,
-            }),
+            })),
           });
           if (res.ok) {
             const data = await res.json();
@@ -2473,27 +2815,21 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       clearTimeout(wsHandshakeTimer);
       updateStatus("connecting", "در حال تایید کلید امنیتی...");
 
-      // Send join room authentication payload
-      const joinPayload = {
+      // Send join room authentication payload with Anti-DPI Traffic Shaping
+      const joinPayload = wrapAntiDpi({
         type: "join",
         room: state.room,
         password: state.password,
         sender: state.nickname,
         time: formatTime(),
-      };
+      });
       try {
         ws.send(JSON.stringify(joinPayload));
       } catch (e) {}
 
-      // Start 20s Keepalive Heartbeat
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = setInterval(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          try {
-            ws.send(JSON.stringify({ type: "ping" }));
-          } catch (e) {}
-        }
-      }, 20000);
+      // Start Anti-DPI Jittered Ping and Decoy Cover Traffic Loops
+      startJitteredPingLoop();
+      startDecoyChaffLoop();
     };
 
     ws.onmessage = (event) => {
@@ -2505,18 +2841,30 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
         return;
       }
       if (!parsed) return;
+      unwrapAntiDpi(parsed);
+
+      // Silently drop Anti-DPI decoy chaff / cover traffic
+      if (parsed.type === "decoy" || parsed.decoy) {
+        return;
+      }
+
+      // Ignore Pong
+      if (parsed.type === "pong") {
+        return;
+      }
 
       // Authentication Success
       if (parsed.type === "auth_success") {
         isConnecting = false;
         state.transportMode = "ws";
         updateTransportBadge("ws");
+        updateAntiDpiBadge();
         updateStatus("connected", "متصل (وب‌سوکت)");
         nativeToast(`وارد اتاق امن «${parsed.room || state.room}» شدید`);
         enterChatView(parsed.room || state.room);
         appendMessage({
           type: "system",
-          text: `به اتاق امن و اختصاصی «${parsed.room || state.room}» متصل شدید. تمامی پیام‌ها با رمزنگاری سرتاسری AES-256 محافظت می‌شوند.`,
+          text: `به اتاق امن و اختصاصی «${parsed.room || state.room}» متصل شدید. تمامی پیام‌ها با رمزنگاری سرتاسری AES-256 و پدینگ تصادفی ضد DPI محافظت می‌شوند.`,
           isEncrypted: false,
         });
         flushOutgoingQueue();
@@ -2576,7 +2924,8 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     };
 
     ws.onclose = () => {
-      clearInterval(heartbeatTimer);
+      if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+      clearInterval(decoyChaffTimer);
 
       if (state.isAuthenticated) {
         // If disconnected after being authenticated, try HTTP fallback immediately
@@ -2594,8 +2943,11 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   async function activateHttpTunnelFallback() {
     isConnecting = false;
     clearTimeout(wsHandshakeTimer);
+    if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+    clearInterval(decoyChaffTimer);
     state.transportMode = "http";
     updateTransportBadge("http");
+    updateAntiDpiBadge();
 
     if (!state.room || !state.password) return;
 
@@ -2603,15 +2955,15 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     const httpBase = getHttpBaseUrl(state.serverUrl);
 
     try {
-      // 1. Authenticate via POST /api/join
+      // 1. Authenticate via POST /api/join with Anti-DPI Traffic Shaping
       const joinRes = await fetch(`${httpBase}/api/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(wrapAntiDpi({
           room: state.room,
           password: state.password,
           sender: state.nickname,
-        }),
+        })),
       });
 
       if (!joinRes.ok) {
@@ -2893,6 +3245,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   // Settings Modal Handlers
   function openSettings() {
     modalServerUrl.value = state.serverUrl;
+    if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
+    if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
+    if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
     autoReconnectInput.checked = state.autoReconnect;
     keepCredentialsInput.checked = state.keepCredentials;
     settingsModal.classList.remove("hidden");
@@ -2901,11 +3256,42 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   function closeSettings() {
     state.serverUrl = sanitizeServerUrl(modalServerUrl.value);
     serverUrlInput.value = state.serverUrl;
+    if (modalCleanIp) state.cleanIp = modalCleanIp.value.trim();
+    if (antiDpiToggle) state.antiDpi = antiDpiToggle.checked;
+    if (decoyChaffToggle) state.decoyChaff = decoyChaffToggle.checked;
     state.autoReconnect = autoReconnectInput.checked;
     state.keepCredentials = keepCredentialsInput.checked;
+    updateAntiDpiBadge();
     persistSettings();
     settingsModal.classList.add("hidden");
   }
+
+  // Connection Presets Handlers
+  if (btnPresetDirect) {
+    btnPresetDirect.addEventListener("click", () => {
+      modalServerUrl.value = "ws://193.168.175.227:8765";
+      nativeToast("الگوی اتصال مستقیم سرور انتخاب شد (:8765)");
+    });
+  }
+
+  if (btnPresetCfTunnel) {
+    btnPresetCfTunnel.addEventListener("click", () => {
+      // If a saved tunnel URL or host exists, use it, otherwise provide Cloudflare WSS template
+      const currentTunnel = state.serverUrl.startsWith("wss://") ? state.serverUrl : "wss://chat.yourdomain.com";
+      modalServerUrl.value = currentTunnel;
+      nativeToast("الگوی کلودفلر تونل انتخاب شد (WSS پورت 443)");
+    });
+  }
+
+  if (antiDpiToggle) {
+    antiDpiToggle.addEventListener("change", () => {
+      state.antiDpi = antiDpiToggle.checked;
+      updateAntiDpiBadge();
+    });
+  }
+
+  // Initialize Anti-DPI badge status on launch
+  updateAntiDpiBadge();
 
   btnSettings.addEventListener("click", openSettings);
   btnCloseSettings.addEventListener("click", closeSettings);
@@ -2968,7 +3354,7 @@ cat << 'MANIFEST_EOF' > "${INSTALL_DIR}/web/manifest.json"
 {
   "name": "رخش چت | Rakhssh Chat",
   "short_name": "Rakhssh Chat",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "description": "کلاینت چت مستقل، سبک و امن با اتاق‌های رمزگذاری‌شده و نوتیفیکیشن صفحه قفل",
   "start_url": "/",
   "scope": "/",
