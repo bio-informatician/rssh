@@ -1226,11 +1226,20 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       return;
     }
 
-    // Auto-fix protocol if missing
-    if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
+    // Auto-fix and sanitize protocol
+    url = url.trim();
+    if (url.startsWith("ws://http://")) {
+      url = "ws://" + url.slice(15);
+    } else if (url.startsWith("wss://https://")) {
+      url = "wss://" + url.slice(16);
+    } else if (url.startsWith("http://")) {
+      url = "ws://" + url.slice(7);
+    } else if (url.startsWith("https://")) {
+      url = "wss://" + url.slice(8);
+    } else if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
       url = "ws://" + url;
-      serverUrlInput.value = url;
     }
+    serverUrlInput.value = url;
 
     clearTimeout(reconnectTimer);
     isManualDisconnect = false;
