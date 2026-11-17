@@ -1,0 +1,17 @@
+# Build artifacts
+build/
+*.pyc
+__pycache__/
+*.idsig
+
+# Xcode / macOS
+.DS_Store
+*.xcuserdata/
+xcuserdata/
+DerivedData/
+*.xcuserstate
+
+# Temporary files
+*.tmp
+*.bak
+*.log
