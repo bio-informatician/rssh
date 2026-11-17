@@ -19,6 +19,8 @@ WEB_ICON = os.path.join(BASE_DIR, "web", "apple-touch-icon.png")
 
 INSTALLER_PATH = os.path.join(BASE_DIR, "install.sh")
 STAGED_PATH = "/home/agent/agent-work/install.sh"
+VERSION = "1.1.0"
+STAGED_VERSIONED_PATH = f"/home/agent/agent-work/install-v{VERSION}.sh"
 
 
 def read_file(path):
@@ -41,7 +43,7 @@ def build_installer():
 
     script = f'''#!/usr/bin/env bash
 # ==============================================================================
-# 🚀 Rakhssh Chat Server - Ubuntu Auto Installer & Systemd Service Setup
+# 🚀 Rakhssh Chat Server v{VERSION} - Ubuntu Auto Installer & Systemd Service Setup
 # Self-contained, automated installer for Ubuntu 20.04 / 22.04 / 24.04 LTS.
 # Supports Android (chat.apk), iOS (PWA Web App), and Web Browsers.
 #
@@ -49,9 +51,13 @@ def build_installer():
 #   sudo bash install.sh
 #   sudo bash install.sh --port 8765
 #   sudo bash install.sh --uninstall
+#   bash install.sh --version
 # ==============================================================================
 
 set -e
+
+# Version
+INSTALLER_VERSION="{VERSION}"
 
 # ANSI Color codes
 C_RESET='\\033[0m'
@@ -81,12 +87,17 @@ while [[ $# -gt 0 ]]; do
       ACTION="uninstall"
       shift
       ;;
+    --version|-v)
+      echo "Rakhssh Chat Server Installer v${{INSTALLER_VERSION}}"
+      exit 0
+      ;;
     --help|-h)
-      echo -e "${{C_BOLD}}راهنمای نصب سرور چت رخش (Rakhssh Chat Server Installer)${{C_RESET}}"
+      echo -e "${{C_BOLD}}راهنمای نصب سرور چت رخش (Rakhssh Chat Server Installer v${{INSTALLER_VERSION}})${{C_RESET}}"
       echo "دستورات قابل استفاده:"
       echo "  sudo bash install.sh               نصب و راه‌اندازی کامل خودکار روی پورت پیش‌فرض (8765)"
       echo "  sudo bash install.sh --port 9000   نصب روی پورت سفارشی (مثلاً 9000)"
       echo "  sudo bash install.sh --uninstall   حذف کامل سرویس و فایل‌ها از سرور"
+      echo "  bash install.sh --version          نمایش نسخه اسکریپت نصاب"
       exit 0
       ;;
     *)
@@ -99,7 +110,7 @@ done
 # Banner
 echo -e "${{C_CYAN}}${{C_BOLD}}"
 echo "========================================================================"
-echo "    🚀  Rakhssh Chat Server (نصب خودکار سرور چت برای اندروید، iOS و وب)     "
+echo "    🚀  Rakhssh Chat Server v${{INSTALLER_VERSION}} (نصب خودکار سرور چت)               "
 echo "========================================================================"
 echo -e "${{C_RESET}}"
 
@@ -305,12 +316,15 @@ echo ""
         f.write(script)
     os.chmod(INSTALLER_PATH, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
-    # Stage at ~/agent-work/install.sh
+    # Stage at ~/agent-work/install.sh and ~/agent-work/install-v1.1.0.sh
     shutil.copy2(INSTALLER_PATH, STAGED_PATH)
+    shutil.copy2(INSTALLER_PATH, STAGED_VERSIONED_PATH)
     os.chmod(STAGED_PATH, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+    os.chmod(STAGED_VERSIONED_PATH, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
     print(f"Generated standalone installer: {INSTALLER_PATH} ({os.path.getsize(INSTALLER_PATH)} bytes)")
     print(f"Staged at: {STAGED_PATH}")
+    print(f"Staged at: {STAGED_VERSIONED_PATH}")
 
 
 if __name__ == "__main__":

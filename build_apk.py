@@ -163,16 +163,29 @@ def build_apk():
     sig_out = run_cmd([APKSIGNER, "verify", "--verbose", final_apk], "Verifying APK cryptographic signatures")
     assert "Verifies" in sig_out, "APK verification failed!"
 
-    # 11. Copy to ~/agent-work/chat.apk
+    # 11. Copy to ~/agent-work/chat.apk and versioned ~/agent-work/chat-v1.1.0.apk
+    version_name = "1.1.0"
+    try:
+        import re
+        with open(MANIFEST_PATH, "r", encoding="utf-8") as mf:
+            m = re.search(r'android:versionName="([^"]+)"', mf.read())
+            if m:
+                version_name = m.group(1)
+    except Exception:
+        pass
+
     staged_apk = os.path.expanduser("~/agent-work/chat.apk")
+    versioned_apk = os.path.expanduser(f"~/agent-work/chat-v{version_name}.apk")
     shutil.copy2(final_apk, staged_apk)
+    shutil.copy2(final_apk, versioned_apk)
 
     size_kb = os.path.getsize(staged_apk) / 1024
     print("=" * 65)
     print(f"🎉 SUCCESS! APK built, verified, and staged at:")
     print(f"   {staged_apk} ({size_kb:.1f} KB)")
+    print(f"   {versioned_apk} ({size_kb:.1f} KB)")
     print("=" * 65)
-    return staged_apk
+    return versioned_apk
 
 
 if __name__ == "__main__":

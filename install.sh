@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🚀 Rakhssh Chat Server - Ubuntu Auto Installer & Systemd Service Setup
+# 🚀 Rakhssh Chat Server v1.1.0 - Ubuntu Auto Installer & Systemd Service Setup
 # Self-contained, automated installer for Ubuntu 20.04 / 22.04 / 24.04 LTS.
 # Supports Android (chat.apk), iOS (PWA Web App), and Web Browsers.
 #
@@ -8,9 +8,13 @@
 #   sudo bash install.sh
 #   sudo bash install.sh --port 8765
 #   sudo bash install.sh --uninstall
+#   bash install.sh --version
 # ==============================================================================
 
 set -e
+
+# Version
+INSTALLER_VERSION="1.1.0"
 
 # ANSI Color codes
 C_RESET='\033[0m'
@@ -40,12 +44,17 @@ while [[ $# -gt 0 ]]; do
       ACTION="uninstall"
       shift
       ;;
+    --version|-v)
+      echo "Rakhssh Chat Server Installer v${INSTALLER_VERSION}"
+      exit 0
+      ;;
     --help|-h)
-      echo -e "${C_BOLD}راهنمای نصب سرور چت رخش (Rakhssh Chat Server Installer)${C_RESET}"
+      echo -e "${C_BOLD}راهنمای نصب سرور چت رخش (Rakhssh Chat Server Installer v${INSTALLER_VERSION})${C_RESET}"
       echo "دستورات قابل استفاده:"
       echo "  sudo bash install.sh               نصب و راه‌اندازی کامل خودکار روی پورت پیش‌فرض (8765)"
       echo "  sudo bash install.sh --port 9000   نصب روی پورت سفارشی (مثلاً 9000)"
       echo "  sudo bash install.sh --uninstall   حذف کامل سرویس و فایل‌ها از سرور"
+      echo "  bash install.sh --version          نمایش نسخه اسکریپت نصاب"
       exit 0
       ;;
     *)
@@ -58,7 +67,7 @@ done
 # Banner
 echo -e "${C_CYAN}${C_BOLD}"
 echo "========================================================================"
-echo "    🚀  Rakhssh Chat Server (نصب خودکار سرور چت برای اندروید، iOS و وب)     "
+echo "    🚀  Rakhssh Chat Server v${INSTALLER_VERSION} (نصب خودکار سرور چت)               "
 echo "========================================================================"
 echo -e "${C_RESET}"
 
@@ -333,6 +342,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     body = json.dumps({
                         "status": "ok",
                         "service": "rakhssh-chat",
+                        "version": "1.1.0",
                         "active_clients": len(clients),
                         "timestamp": int(time.time()),
                     }).encode("utf-8")
@@ -522,7 +532,7 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
       </div>
 
       <div class="header-center">
-        <div class="app-title">رخش چت (Rakhssh)</div>
+        <div class="app-title">رخش چت <span class="version-tag">v1.1.0</span></div>
         <div class="connection-status">
           <span id="statusIndicator" class="status-dot disconnected"></span>
           <span id="statusText">قطع اتصال</span>
@@ -702,6 +712,22 @@ body {
   font-weight: 700;
   color: var(--text-main);
   letter-spacing: -0.2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.version-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  padding: 1px 6px;
+  border-radius: 9999px;
+  direction: ltr;
+  display: inline-block;
 }
 
 .connection-status {
@@ -1451,6 +1477,7 @@ cat << 'MANIFEST_EOF' > "${INSTALL_DIR}/web/manifest.json"
 {
   "name": "رخش چت | Rakhssh Chat",
   "short_name": "Rakhssh Chat",
+  "version": "1.1.0",
   "description": "کلاینت چت مستقل، سبک و امن متصل به سرور رخش",
   "start_url": "/",
   "scope": "/",

@@ -1,6 +1,7 @@
 {
   "name": "رخش چت | Rakhssh Chat",
   "short_name": "Rakhssh Chat",
+  "version": "1.1.0",
   "description": "کلاینت چت مستقل، سبک و امن متصل به سرور رخش",
   "start_url": "/",
   "scope": "/",

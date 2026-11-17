@@ -223,6 +223,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     body = json.dumps({
                         "status": "ok",
                         "service": "rakhssh-chat",
+                        "version": "1.1.0",
                         "active_clients": len(clients),
                         "timestamp": int(time.time()),
                     }).encode("utf-8")
