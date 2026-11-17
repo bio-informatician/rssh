@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
@@ -23,12 +25,32 @@ import android.widget.Toast;
 public class MainActivity extends Activity {
 
     private WebView webView;
+    private volatile boolean isForeground = false;
 
     @Override
     @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // 1. Start persistent background service so connection remains active when screen locks
+        try {
+            Intent serviceIntent = new Intent(this, ChatForegroundService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception ignored) {
+        }
+
+        // 2. Request Android 13+ Notification Runtime Permission
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 101);
+            }
+        }
+
+        // 3. Initialize WebView
         webView = new WebView(this);
         setContentView(webView);
 
@@ -54,6 +76,18 @@ public class MainActivity extends Activity {
 
         // Load web chat frontend bundled in APK assets
         webView.loadUrl("file:///android_asset/web/index.html");
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        isForeground = true;
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        isForeground = false;
     }
 
     public class ChatNativeInterface {
@@ -91,6 +125,37 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void showNotification(final String sender, final String message, final String room) {
+            runOnUiThread(() -> ChatForegroundService.showIncomingMessageNotification(
+                    MainActivity.this,
+                    sender,
+                    message,
+                    room
+            ));
+        }
+
+        @JavascriptInterface
+        public boolean isAppForeground() {
+            return isForeground;
+        }
+
+        @JavascriptInterface
+        public void minimizeApp() {
+            runOnUiThread(() -> moveTaskToBack(true));
+        }
+
+        @JavascriptInterface
+        public void exitApp() {
+            runOnUiThread(() -> {
+                try {
+                    stopService(new Intent(MainActivity.this, ChatForegroundService.class));
+                } catch (Exception ignored) {
+                }
+                finishAndRemoveTask();
+            });
+        }
+
+        @JavascriptInterface
         public boolean isNetworkConnected() {
             try {
                 ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -113,7 +178,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String getAppVersion() {
-            return "1.0.0";
+            return "1.2.0";
         }
     }
 
@@ -123,7 +188,8 @@ public class MainActivity extends Activity {
             // Check if web layer wants to close a modal or drawer first
             webView.evaluateJavascript("window.onBackPressed ? window.onBackPressed() : false;", value -> {
                 if (!"true".equals(value)) {
-                    finish();
+                    // Minimize to background instead of destroying Activity
+                    moveTaskToBack(true);
                 }
             });
             return true;

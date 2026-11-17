@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🚀 Rakhssh Chat Server v1.1.0 - Ubuntu Auto Installer & Systemd Service Setup
+# 🚀 Rakhssh Chat Server v1.2.0 - Ubuntu Auto Installer & Systemd Service Setup
 # Self-contained, automated installer for Ubuntu 20.04 / 22.04 / 24.04 LTS.
 # Supports Android (chat.apk), iOS (PWA Web App), and Web Browsers.
 #
@@ -14,7 +14,7 @@
 set -e
 
 # Version
-INSTALLER_VERSION="1.1.0"
+INSTALLER_VERSION="1.2.0"
 
 # ANSI Color codes
 C_RESET='\033[0m'
@@ -122,8 +122,10 @@ cat << 'SERVER_EOF' > "${INSTALL_DIR}/server.py"
 Lightweight Zero-Dependency WebSocket & Web Chat Server (Python 3 Standard Library).
 RFC 6455 compliant. Runs out of the box with zero pip dependencies.
 Supports:
+  - Private password-protected rooms (Zero room listing / Strict room isolation)
   - WebSocket clients (Android Chat APK: ws://<ip>:8765)
   - Web browser clients (http://<ip>:8765)
+  - Background keepalive (RFC 6455 Ping/Pong + JSON Heartbeats)
   - Health check endpoint (http://<ip>:8765/health)
   - Headless / Systemd service operation with zero TTY errors
   - Graceful shutdown handling (SIGINT / SIGTERM)
@@ -132,9 +134,11 @@ Supports:
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
+import secrets
 import signal
 import socket
 import struct
@@ -142,7 +146,16 @@ import sys
 import time
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+VERSION = "1.2.0"
+
+# Connected WebSocket clients
 clients = set()
+
+# client_info: writer -> {"peer": (ip, port), "room": str|None, "nickname": str|None, "authenticated": bool}
+client_info = {}
+
+# rooms: room_name -> {"salt": hex, "hash": hex, "created_at": float, "creator": str, "clients": set(writers)}
+rooms = {}
 
 # Determine Web Directory for static files
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -171,9 +184,9 @@ FALLBACK_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div class="card">
-    <div class="badge">● سرور فعال و در حال اجرا است</div>
+    <div class="badge">● سرور فعال و در حال اجرا است (v1.2.0)</div>
     <h1>سرور چت رخش (Rakhssh)</h1>
-    <p>سرور چت با موفقیت روی لینوکس راه‌اندازی شد. برای اتصال با اپلیکیشن اندروید (chat.apk)، آدرس زیر را در تنظیمات وارد کنید:</p>
+    <p>سرور چت با اتاق‌های رمزگذاری شده روی لینوکس راه‌اندازی شد. برای اتصال با اپلیکیشن اندروید (chat.apk)، آدرس زیر را در تنظیمات وارد کنید:</p>
     <div class="code-box" id="wsUrl">ws://YOUR-SERVER-IP:8765</div>
     <p style="font-size: 0.85rem; color: #64748b;">پروتکل: RFC 6455 WebSocket | پورت: 8765</p>
   </div>
@@ -183,6 +196,11 @@ FALLBACK_HTML = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+def hash_password(password: str, salt: str) -> str:
+    """Compute cryptographic hash of password using salt."""
+    return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
 
 
 def get_local_ips():
@@ -209,11 +227,11 @@ def make_handshake_response(key: str) -> bytes:
     return resp.encode()
 
 
-def encode_frame(payload: str) -> bytes:
+def encode_frame(payload: str, opcode: int = 0x1) -> bytes:
     """Encode text payload into an unmasked RFC 6455 WebSocket frame."""
-    data = payload.encode("utf-8")
+    data = payload.encode("utf-8") if isinstance(payload, str) else payload
     length = len(data)
-    frame = bytearray([0x81])  # FIN + Text Opcode (0x1)
+    frame = bytearray([0x80 | (opcode & 0x0F)])  # FIN + Opcode
 
     if length <= 125:
         frame.append(length)
@@ -263,14 +281,19 @@ async def decode_frame(reader: asyncio.StreamReader):
     if is_masked and mask:
         data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
 
+    if opcode in (0x9, 0xA):  # Ping / Pong
+        return opcode, data
+
     return opcode, data.decode("utf-8", errors="replace")
 
 
-async def broadcast(message_json: str, sender_writer=None):
-    """Broadcast a message frame to all connected clients."""
+async def broadcast_room(room_name: str, message_json: str, sender_writer=None):
+    """Broadcast a message frame ONLY to authenticated clients inside a specific room."""
+    if not room_name or room_name not in rooms:
+        return
     frame = encode_frame(message_json)
     dead_clients = set()
-    for writer in list(clients):
+    for writer in list(rooms[room_name]["clients"]):
         if writer is not sender_writer:
             try:
                 writer.write(frame)
@@ -278,7 +301,9 @@ async def broadcast(message_json: str, sender_writer=None):
             except Exception:
                 dead_clients.add(writer)
     for dc in dead_clients:
+        rooms[room_name]["clients"].discard(dc)
         clients.discard(dc)
+        client_info.pop(dc, None)
 
 
 def get_static_file(path: str):
@@ -342,7 +367,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     body = json.dumps({
                         "status": "ok",
                         "service": "rakhssh-chat",
-                        "version": "1.1.0",
+                        "version": VERSION,
                         "active_clients": len(clients),
                         "timestamp": int(time.time()),
                     }).encode("utf-8")
@@ -391,34 +416,216 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         await writer.drain()
 
         clients.add(writer)
+        client_info[writer] = {
+            "peer": peername,
+            "room": None,
+            "nickname": None,
+            "authenticated": False,
+        }
         print(f"\n[+] Client connected: {peername[0]}:{peername[1]} (Active clients: {len(clients)})")
         if sys.stdin is not None and sys.stdin.isatty():
             print("Server (type message and press Enter): ", end="", flush=True)
 
-        # Send welcome message frame
+        # Send welcome message frame (Prompt to join a private room)
         welcome = json.dumps({
             "type": "system",
             "sender": "Server",
-            "text": "به سرور چت متصل شدید. می‌توانید پیام ارسال کنید."
-        })
+            "text": "به سرور چت امن رخش متصل شدید. لطفاً نام اتاق و رمز عبور را وارد کنید."
+        }, ensure_ascii=False)
         writer.write(encode_frame(welcome))
         await writer.drain()
 
         # 3. Message Loop
         while True:
             opcode, message = await decode_frame(reader)
-            if opcode is None or opcode == 0x8:
+            if opcode is None or opcode == 0x8:  # Client closed
                 break
+
+            if opcode == 0x9:  # RFC 6455 Ping frame -> Respond with Pong frame (0xA)
+                writer.write(encode_frame(message or b"", opcode=0xA))
+                await writer.drain()
+                continue
+
+            if opcode == 0xA:  # Pong frame received
+                continue
+
             if opcode == 0x1 and message:  # Text frame
-                print(f"\r[{peername[0]}]: {message}")
-                if sys.stdin is not None and sys.stdin.isatty():
-                    print("Server (type message and press Enter): ", end="", flush=True)
-                await broadcast(message, sender_writer=writer)
+                try:
+                    payload = json.loads(message)
+                except Exception:
+                    continue
+
+                msg_type = payload.get("type")
+
+                # Heartbeat Ping from Web/Android client
+                if msg_type == "ping":
+                    pong_resp = json.dumps({"type": "pong", "time": int(time.time())})
+                    writer.write(encode_frame(pong_resp))
+                    await writer.drain()
+                    continue
+
+                # Room Join / Authentication request
+                if msg_type == "join":
+                    raw_room = str(payload.get("room") or "").strip()
+                    password = str(payload.get("password") or "").strip()
+                    sender = str(payload.get("sender") or "").strip() or "کاربر"
+
+                    if not raw_room:
+                        err = json.dumps({
+                            "type": "auth_error",
+                            "text": "نام اتاق نمی‌تواند خالی باشد."
+                        }, ensure_ascii=False)
+                        writer.write(encode_frame(err))
+                        await writer.drain()
+                        continue
+
+                    if not password:
+                        err = json.dumps({
+                            "type": "auth_error",
+                            "text": "رمز عبور اتاق الزامی است."
+                        }, ensure_ascii=False)
+                        writer.write(encode_frame(err))
+                        await writer.drain()
+                        continue
+
+                    room_id = raw_room.lower()
+
+                    # Check or create room
+                    if room_id not in rooms:
+                        salt = secrets.token_hex(16)
+                        pw_hash = hash_password(password, salt)
+                        rooms[room_id] = {
+                            "name": raw_room,
+                            "salt": salt,
+                            "hash": pw_hash,
+                            "created_at": time.time(),
+                            "creator": sender,
+                            "clients": set(),
+                        }
+                        print(f"🔒 [Room Created] '{room_id}' by '{sender}' from {peername[0]}")
+                    else:
+                        salt = rooms[room_id]["salt"]
+                        expected_hash = rooms[room_id]["hash"]
+                        provided_hash = hash_password(password, salt)
+                        if not hmac.compare_digest(provided_hash, expected_hash):
+                            print(f"⛔ [Auth Failed] '{sender}' wrong password for '{room_id}' from {peername[0]}")
+                            err = json.dumps({
+                                "type": "auth_error",
+                                "room": raw_room,
+                                "text": "رمز عبور اتاق نادرست است! دسترسی غیرمجاز."
+                            }, ensure_ascii=False)
+                            writer.write(encode_frame(err))
+                            await writer.drain()
+                            continue
+
+                    # Remove from old room if already joined
+                    old_room = client_info[writer].get("room")
+                    if old_room and old_room in rooms:
+                        rooms[old_room]["clients"].discard(writer)
+
+                    # Authorize client in room
+                    rooms[room_id]["clients"].add(writer)
+                    client_info[writer] = {
+                        "peer": peername,
+                        "room": room_id,
+                        "room_display": raw_room,
+                        "nickname": sender,
+                        "authenticated": True,
+                    }
+
+                    print(f"🔑 [Auth Success] '{sender}' joined room '{room_id}' (Members: {len(rooms[room_id]['clients'])})")
+
+                    success_resp = json.dumps({
+                        "type": "auth_success",
+                        "room": raw_room,
+                        "sender": sender,
+                        "text": f"با موفقیت به اتاق امن «{raw_room}» متصل شدید."
+                    }, ensure_ascii=False)
+                    writer.write(encode_frame(success_resp))
+                    await writer.drain()
+
+                    # Notify other members of this room ONLY
+                    join_announce = json.dumps({
+                        "type": "system",
+                        "room": raw_room,
+                        "text": f"«{sender}» وارد اتاق شد."
+                    }, ensure_ascii=False)
+                    await broadcast_room(room_id, join_announce, sender_writer=writer)
+                    continue
+
+                # Room Chat message
+                if msg_type == "chat":
+                    info = client_info.get(writer)
+                    if not info or not info.get("authenticated") or not info.get("room"):
+                        err = json.dumps({
+                            "type": "auth_error",
+                            "text": "خطا: شما ابتدا باید با نام و رمز عبور وارد یک اتاق شوید."
+                        }, ensure_ascii=False)
+                        writer.write(encode_frame(err))
+                        await writer.drain()
+                        continue
+
+                    current_room = info["room"]
+                    display_room = info.get("room_display", current_room)
+                    sender = info["nickname"]
+                    text = str(payload.get("text") or "").strip()
+                    time_str = payload.get("time") or time.strftime("%H:%M")
+
+                    if not text:
+                        continue
+
+                    print(f"[{display_room}] [{sender}]: {text}")
+                    if sys.stdin is not None and sys.stdin.isatty():
+                        print("Server (type message and press Enter): ", end="", flush=True)
+
+                    out_msg = json.dumps({
+                        "type": "chat",
+                        "room": display_room,
+                        "sender": sender,
+                        "text": text,
+                        "time": time_str
+                    }, ensure_ascii=False)
+
+                    # Strictly broadcast only to members of this room
+                    await broadcast_room(current_room, out_msg, sender_writer=writer)
+                    continue
+
+                # Leave room request
+                if msg_type == "leave":
+                    info = client_info.get(writer)
+                    if info and info.get("room"):
+                        r = info["room"]
+                        s = info.get("nickname", "کاربر")
+                        if r in rooms:
+                            rooms[r]["clients"].discard(writer)
+                            leave_msg = json.dumps({
+                                "type": "system",
+                                "room": info.get("room_display", r),
+                                "text": f"«{s}» از اتاق خارج شد."
+                            }, ensure_ascii=False)
+                            await broadcast_room(r, leave_msg)
+                        info["room"] = None
+                        info["authenticated"] = False
+                    continue
 
     except Exception:
         pass
     finally:
         clients.discard(writer)
+        info = client_info.pop(writer, None)
+        if info and info.get("authenticated") and info.get("room"):
+            r = info["room"]
+            s = info.get("nickname", "کاربر")
+            if r in rooms:
+                rooms[r]["clients"].discard(writer)
+                if rooms[r]["clients"]:
+                    leave_msg = json.dumps({
+                        "type": "system",
+                        "room": info.get("room_display", r),
+                        "text": f"«{s}» از گفتگو خارج شد."
+                    }, ensure_ascii=False)
+                    asyncio.create_task(broadcast_room(r, leave_msg))
+
         try:
             writer.close()
             await writer.wait_closed()
@@ -430,7 +637,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 
 async def terminal_input_loop():
-    """Allows typing messages in terminal to broadcast to connected phones when interactive."""
+    """Allows typing broadcast messages from terminal if running interactively."""
     if sys.stdin is None or not sys.stdin.isatty():
         return
 
@@ -446,14 +653,17 @@ async def terminal_input_loop():
                 break
             text = line.decode().strip()
             if text:
-                msg = json.dumps({
-                    "type": "chat",
-                    "sender": "Server Terminal (کامپیوتر)",
-                    "text": text,
-                    "time": time.strftime("%H:%M")
-                })
-                await broadcast(msg)
-                print(f"Sent to {len(clients)} client(s): {text}")
+                # Terminal broadcast to all rooms
+                for room_id in list(rooms.keys()):
+                    msg = json.dumps({
+                        "type": "chat",
+                        "room": rooms[room_id].get("name", room_id),
+                        "sender": "Server Terminal (مدیر)",
+                        "text": text,
+                        "time": time.strftime("%H:%M")
+                    }, ensure_ascii=False)
+                    await broadcast_room(room_id, msg)
+                print(f"Sent to active rooms: {text}")
             print("Server (type message and press Enter): ", end="", flush=True)
     except Exception:
         pass
@@ -467,7 +677,7 @@ async def main():
     local_ips = get_local_ips()
 
     print("=" * 65)
-    print("      🚀 Rakhssh WebSocket & Web Chat Server")
+    print("      🚀 Rakhssh Secure WebSocket & Web Chat Server v1.2.0")
     print("=" * 65)
     print(f"Server is listening on {host}:{port}")
     print("\n👉 Use any of the following addresses:")
@@ -479,7 +689,7 @@ async def main():
 
     is_interactive = sys.stdin is not None and sys.stdin.isatty()
     if is_interactive:
-        print("You can also type messages below to send to connected phones:")
+        print("Interactive mode active. Type message and press Enter:")
         print("Server (type message and press Enter): ", end="", flush=True)
         async with server:
             await asyncio.gather(server.serve_forever(), terminal_input_loop())
@@ -503,7 +713,7 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Rakhssh Chat</title>
+  <title>رخش چت - پیام‌رسان امن و خصوصی</title>
   
   <!-- Apple iOS PWA Meta Tags -->
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -514,7 +724,7 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
 
   <!-- Web App Manifest -->
   <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#0f172a">
+  <meta name="theme-color" content="#0b0f19">
 
   <link rel="stylesheet" href="style.css">
 </head>
@@ -523,25 +733,43 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
     <!-- Top Bar -->
     <header class="app-header">
       <div class="header-left">
-        <button id="btnSettings" class="icon-btn" title="تنظیمات اتصال سرور">
-          <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none">
+        <button id="btnSettings" class="icon-btn" title="تنظیمات سرور">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+
+        <button id="btnLeaveRoom" class="icon-btn hidden" title="خروج از اتاق">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <polyline points="16 17 21 12 16 7"></polyline>
+            <line x1="21" y1="12" x2="9" y2="12"></line>
           </svg>
         </button>
       </div>
 
       <div class="header-center">
-        <div class="app-title">رخش چت <span class="version-tag">v1.1.0</span></div>
+        <div class="app-title">
+          <span>رخش چت</span>
+          <span class="version-tag">v1.2.0</span>
+        </div>
         <div class="connection-status">
           <span id="statusIndicator" class="status-dot disconnected"></span>
-          <span id="statusText">قطع اتصال</span>
+          <span id="statusText">در انتظار اتصال</span>
+          <span id="roomStatusBadge" class="room-pill hidden">🔒 <span id="currentRoomDisplay"></span></span>
         </div>
       </div>
 
       <div class="header-right">
-        <button id="btnClear" class="icon-btn" title="پاکسازی پیام‌ها">
+        <button id="btnNotification" class="icon-btn" title="اعلان پیام‌ها و صفحه قفل">
           <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+        </button>
+        <button id="btnClear" class="icon-btn hidden" title="پاکسازی صفحه چت">
+          <svg viewBox="0 0 24 24" width="19" height="19" stroke="currentColor" stroke-width="2" fill="none">
             <polyline points="3 6 5 6 21 6"></polyline>
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
           </svg>
@@ -549,90 +777,168 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
       </div>
     </header>
 
-    <!-- Chat Messages Scroll View -->
-    <main id="chatMessages" class="messages-container">
-      <div class="welcome-box">
-        <div class="welcome-icon">💬</div>
-        <h3>کلاینت چت با سرور دلخواه</h3>
-        <p>برای شروع، آدرس سرور چت خود (مثلاً <code>ws://192.168.1.X:8765</code>) را در تنظیمات وارد کرده و متصل شوید.</p>
-        <button id="btnOpenSettingsHero" class="btn-primary-small">تنظیم آدرس سرور</button>
-      </div>
-    </main>
-
-    <!-- Bottom Input Bar -->
-    <footer class="app-footer">
-      <form id="chatForm" class="input-form">
-        <input 
-          type="text" 
-          id="messageInput" 
-          placeholder="پیام خود را بنویسید..." 
-          autocomplete="off" 
-          enterkeyhint="send"
-        />
-        <button type="submit" id="btnSend" class="send-btn" title="ارسال پیام">
-          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+    <!-- Room Gate: Shown when user is not inside an authorized room -->
+    <div id="roomGate" class="gate-container">
+      <div class="gate-card">
+        <div class="gate-shield-icon">
+          <svg viewBox="0 0 24 24" width="44" height="44" stroke="#38bdf8" stroke-width="1.8" fill="none">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            <path d="M9 12l2 2 4-4"></path>
           </svg>
-        </button>
-      </form>
-    </footer>
+        </div>
+
+        <h2>ورود به اتاق امن و اختصاصی</h2>
+        <p class="gate-desc">
+          فهرست گروه‌ها برای حفظ حریم خصوصی مخفی است. برای پیوستن، نام دقیق گروه و رمز عبور اختصاصی آن را وارد کنید.
+        </p>
+
+        <div id="gateError" class="alert-box danger hidden">
+          <span id="gateErrorText">رمز عبور اتاق نادرست است!</span>
+        </div>
+
+        <form id="gateForm" class="gate-form">
+          <div class="form-group">
+            <label for="gateNickname">نام شما (نام مستعار):</label>
+            <input 
+              type="text" 
+              id="gateNickname" 
+              placeholder="مثلاً: آرش، گوشی من، مدیر" 
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="gateRoomName">نام گروه / اتاق:</label>
+            <input 
+              type="text" 
+              id="gateRoomName" 
+              dir="ltr"
+              placeholder="مثلاً: team-secret یا family-vip" 
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="gateRoomPassword">رمز سخت و اختصاصی اتاق:</label>
+            <div class="password-wrapper">
+              <input 
+                type="password" 
+                id="gateRoomPassword" 
+                dir="ltr"
+                placeholder="رمز عبور قوی اتاق" 
+                required
+              />
+              <button type="button" id="btnTogglePassword" class="toggle-pwd-btn" title="نمایش/مخفی‌سازی رمز">
+                👁️
+              </button>
+            </div>
+            <small class="field-hint">اگر اتاق هنوز ایجاد نشده باشد، با این رمز ساخته می‌شود.</small>
+          </div>
+
+          <div class="form-group advanced-toggle-group">
+            <button type="button" id="btnToggleAdvanced" class="link-btn">
+              ⚙️ تنظیمات پیشرفته آدرس سرور
+            </button>
+            <div id="advancedServerBlock" class="hidden">
+              <input 
+                type="text" 
+                id="serverUrl" 
+                dir="ltr"
+                placeholder="ws://193.168.175.227:8765" 
+                value="" 
+              />
+            </div>
+          </div>
+
+          <button type="submit" id="btnEnterRoom" class="btn-primary-block">
+            <span class="btn-icon">🔒</span>
+            <span>ورود و اتصال به اتاق</span>
+          </button>
+        </form>
+
+        <div class="gate-footer-note">
+          <span>● پیام‌ها و اتاق‌ها کاملاً مجزا و محافظت‌شده هستند</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Chat View: Shown once authorized in a room -->
+    <div id="chatView" class="chat-container hidden">
+      <!-- Background Notification Prompt Banner (if browser permission needed) -->
+      <div id="notifBanner" class="notif-banner hidden">
+        <span>🔔 برای دریافت پیام‌ها روی صفحه قفل و در پس‌زمینه، دسترسی اعلان را تایید کنید.</span>
+        <button id="btnEnableNotif" class="btn-banner">فعال‌سازی</button>
+      </div>
+
+      <!-- Chat Messages Scroll View -->
+      <main id="chatMessages" class="messages-container">
+      </main>
+
+      <!-- Bottom Input Bar -->
+      <footer class="app-footer">
+        <form id="chatForm" class="input-form">
+          <input 
+            type="text" 
+            id="messageInput" 
+            placeholder="پیام خود را بنویسید..." 
+            autocomplete="off" 
+            enterkeyhint="send"
+          />
+          <button type="submit" id="btnSend" class="send-btn" title="ارسال پیام">
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </form>
+      </footer>
+    </div>
 
     <!-- Settings Modal Drawer -->
     <div id="settingsModal" class="modal-backdrop hidden">
       <div class="modal-card">
         <div class="modal-header">
-          <h3>تنظیمات اتصال سرور</h3>
+          <h3>تنظیمات اتصال و سرور</h3>
           <button id="btnCloseSettings" class="close-btn">&times;</button>
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label for="serverUrl">آدرس سرور (WebSocket یا HTTP):</label>
+            <label for="modalServerUrl">آدرس سرور WebSocket:</label>
             <input 
               type="text" 
-              id="serverUrl" 
+              id="modalServerUrl" 
               dir="ltr"
-              placeholder="ws://192.168.1.100:8765" 
-              value="ws://192.168.1.100:8765" 
-            />
-            <div class="quick-presets">
-              <span class="preset-tag" data-url="ws://127.0.0.1:8765">Localhost</span>
-              <span class="preset-tag" data-url="ws://192.168.1.100:8765">LAN IP</span>
-              <span class="preset-tag" data-url="ws://echo.websocket.events">Echo Test</span>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="nickname">نام مستعار شما:</label>
-            <input 
-              type="text" 
-              id="nickname" 
-              placeholder="مثلاً: گوشی من یا علیرضا" 
-              value="گوشی من" 
-            />
-          </div>
-
-          <div class="form-group">
-            <label for="roomName">شناسه اتاق / روم (اختیاری):</label>
-            <input 
-              type="text" 
-              id="roomName" 
-              dir="ltr"
-              placeholder="general یا 100-200-300" 
-              value="general" 
+              placeholder="ws://193.168.175.227:8765" 
             />
           </div>
 
           <div class="form-group checkbox-group">
             <label>
               <input type="checkbox" id="autoReconnect" checked />
-              اتصال مجدد خودکار در صورت قطعی
+              اتصال مجدد خودکار در صورت قطع شدن شبکه
             </label>
           </div>
 
+          <div class="form-group checkbox-group">
+            <label>
+              <input type="checkbox" id="keepCredentials" checked />
+              ذخیره نام اتاق و رمز در این دستگاه
+            </label>
+          </div>
+
+          <div class="modal-actions-grid">
+            <button id="btnTestNotif" class="btn-action secondary">
+              🔔 تست اعلان صفحه قفل
+            </button>
+            <button id="btnMinimizeApp" class="btn-action secondary">
+              ⬇️ رفتن به پس‌زمینه (بدون قطع شدن)
+            </button>
+          </div>
+
+          <div class="modal-divider"></div>
+
           <div class="modal-actions">
-            <button id="btnConnect" class="btn-connect">اتصال به سرور</button>
-            <button id="btnDisconnect" class="btn-disconnect">قطع اتصال</button>
+            <button id="btnDisconnectModal" class="btn-disconnect">قطع کامل و خروج از اتاق</button>
           </div>
         </div>
       </div>
@@ -703,6 +1009,12 @@ body {
   z-index: 10;
 }
 
+.header-left, .header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .header-center {
   text-align: center;
 }
@@ -738,6 +1050,17 @@ body {
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 2px;
+}
+
+.room-pill {
+  background: rgba(2, 132, 199, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  direction: ltr;
 }
 
 .status-dot {
@@ -781,6 +1104,210 @@ body {
   transform: scale(0.95);
 }
 
+/* Room Authentication Gate */
+.gate-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gate-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 20px;
+  padding: 28px 24px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  text-align: center;
+}
+
+.gate-shield-icon {
+  margin-bottom: 16px;
+  display: inline-flex;
+  padding: 14px;
+  background: rgba(56, 189, 248, 0.1);
+  border-radius: 50%;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+}
+
+.gate-card h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-bottom: 8px;
+}
+
+.gate-desc {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.gate-form {
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-light);
+}
+
+.form-group input[type="text"],
+.form-group input[type="password"] {
+  background: #0D1322;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: var(--text-main);
+  font-size: 14px;
+  outline: none;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.form-group input[type="text"]:focus,
+.form-group input[type="password"]:focus {
+  border-color: var(--accent-glow);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+}
+
+.password-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-wrapper input {
+  width: 100%;
+  padding-left: 42px !important;
+}
+
+.toggle-pwd-btn {
+  position: absolute;
+  left: 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px;
+  opacity: 0.7;
+}
+
+.toggle-pwd-btn:hover {
+  opacity: 1;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.alert-box {
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  margin-bottom: 16px;
+  text-align: right;
+  line-height: 1.4;
+}
+
+.alert-box.danger {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.btn-primary-block {
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  padding: 14px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.35);
+  transition: all 0.2s;
+  margin-top: 4px;
+}
+
+.btn-primary-block:active {
+  transform: scale(0.98);
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent-glow);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: right;
+  padding: 4px 0;
+}
+
+.advanced-toggle-group {
+  margin-top: -6px;
+}
+
+.gate-footer-note {
+  margin-top: 20px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* Chat View */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
+}
+
+.notif-banner {
+  background: rgba(16, 185, 129, 0.15);
+  border-bottom: 1px solid rgba(16, 185, 129, 0.3);
+  color: #6ee7b7;
+  padding: 10px 16px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.btn-banner {
+  background: var(--success);
+  color: #064e3b;
+  font-weight: 700;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 /* Messages Container */
 .messages-container {
   flex: 1;
@@ -792,107 +1319,69 @@ body {
   scroll-behavior: smooth;
 }
 
-.welcome-box {
-  background: var(--bg-surface);
-  border: 1px dashed var(--border-subtle);
-  border-radius: 16px;
-  padding: 24px 16px;
-  text-align: center;
-  margin: auto 0;
-  color: var(--text-muted);
-}
-
-.welcome-icon {
-  font-size: 36px;
-  margin-bottom: 8px;
-}
-
-.welcome-box h3 {
-  font-size: 16px;
-  color: var(--text-main);
-  margin-bottom: 6px;
-}
-
-.welcome-box p {
-  font-size: 12px;
-  line-height: 1.6;
-  margin-bottom: 16px;
-}
-
-.welcome-box code {
-  background: var(--bg-surface-elevated);
-  color: var(--accent-glow);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: monospace;
-}
-
-.btn-primary-small {
-  background: var(--accent-primary);
-  color: white;
-  border: none;
-  padding: 8px 16px;
-  font-size: 13px;
-  font-weight: 600;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-/* Message bubbles */
 .msg-wrapper {
   display: flex;
   flex-direction: column;
-  max-width: 82%;
-  animation: fadeIn 0.15s ease-out;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+  width: 100%;
 }
 
 .msg-wrapper.me {
-  align-self: flex-start; /* in RTL, flex-start is right */
+  align-items: flex-start; /* In RTL, 'me' aligns to left */
 }
 
 .msg-wrapper.peer {
-  align-self: flex-end; /* in RTL, flex-end is left */
+  align-items: flex-end; /* In RTL, 'peer' aligns to right */
+}
+
+.msg-wrapper.system {
+  align-items: center;
+  margin: 6px 0;
+}
+
+.msg-wrapper.system .msg-bubble {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  max-width: 90%;
+  text-align: center;
 }
 
 .msg-bubble {
+  max-width: 82%;
   padding: 10px 14px;
-  border-radius: 14px;
+  border-radius: 16px;
   position: relative;
   word-break: break-word;
-  font-size: 14px;
-  line-height: 1.45;
-  user-select: text;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 
 .msg-wrapper.me .msg-bubble {
-  background: var(--bubble-me);
-  color: #FFFFFF;
-  border-bottom-right-radius: 3px;
-  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.3);
+  background-color: var(--bubble-me);
+  color: #ffffff;
+  border-bottom-left-radius: 4px;
 }
 
 .msg-wrapper.peer .msg-bubble {
-  background: var(--bubble-peer);
-  color: var(--text-light);
-  border-bottom-left-radius: 3px;
+  background-color: var(--bubble-peer);
+  color: var(--text-main);
+  border-bottom-right-radius: 4px;
   border: 1px solid var(--border-subtle);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .msg-sender {
   font-size: 11px;
   font-weight: 600;
   color: var(--accent-glow);
-  margin-bottom: 3px;
+  margin-bottom: 4px;
 }
 
 .msg-text {
-  white-space: pre-wrap;
+  font-size: 14px;
+  line-height: 1.5;
+  user-select: text;
 }
 
 .msg-meta {
@@ -901,102 +1390,92 @@ body {
   justify-content: flex-end;
   gap: 4px;
   font-size: 10px;
+  opacity: 0.7;
   margin-top: 4px;
-  opacity: 0.75;
 }
 
-.msg-wrapper.system {
-  align-self: center;
-  max-width: 90%;
-  margin: 6px 0;
-}
-
-.msg-wrapper.system .msg-bubble {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-muted);
-  font-size: 11px;
-  padding: 4px 12px;
-  border-radius: 20px;
-  text-align: center;
-}
-
-/* Footer & Input */
+/* Footer / Input Bar */
 .app-footer {
-  padding: 10px max(14px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
-  background: var(--bg-surface);
+  padding: 12px 16px max(12px, env(safe-area-inset-bottom)) 16px;
+  background-color: var(--bg-surface);
   border-top: 1px solid var(--border-subtle);
-  z-index: 10;
 }
 
 .input-form {
   display: flex;
   align-items: center;
   gap: 10px;
+  background-color: #0D1322;
+  border: 1px solid var(--border-subtle);
+  border-radius: 24px;
+  padding: 4px 8px 4px 14px;
+  transition: all 0.2s;
+}
+
+.input-form:focus-within {
+  border-color: var(--accent-glow);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
 }
 
 .input-form input {
   flex: 1;
-  background: var(--bg-surface-elevated);
-  border: 1px solid var(--border-subtle);
+  background: transparent;
+  border: none;
+  outline: none;
   color: var(--text-main);
-  padding: 12px 14px;
-  border-radius: 12px;
   font-size: 14px;
   font-family: inherit;
-  outline: none;
-  transition: border-color 0.2s;
-}
-
-.input-form input:focus {
-  border-color: var(--accent-glow);
+  direction: rtl;
 }
 
 .send-btn {
-  background: var(--accent-primary);
+  background-color: var(--accent-primary);
+  color: #ffffff;
   border: none;
-  color: white;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: transform 0.15s, background 0.2s;
+  transition: all 0.2s;
 }
 
 .send-btn:active {
   transform: scale(0.92);
+  background-color: var(--accent-glow);
 }
 
-/* Settings Modal */
+/* Modal Drawer */
 .modal-backdrop {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.75);
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(4px);
-  z-index: 50;
   display: flex;
   align-items: flex-end;
-  transition: opacity 0.2s ease-in-out;
+  justify-content: center;
+  z-index: 100;
+  transition: opacity 0.2s;
 }
 
 .modal-backdrop.hidden {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .modal-card {
-  background: var(--bg-surface);
-  width: 100%;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
   border-radius: 20px 20px 0 0;
-  border-top: 1px solid var(--border-subtle);
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.5);
-  padding: 20px;
-  animation: slideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  width: 100%;
+  max-width: 600px;
+  padding: 24px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.5);
+  animation: slideUp 0.25s ease-out;
 }
 
 @keyframes slideUp {
@@ -1008,7 +1487,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 .modal-header h3 {
@@ -1017,156 +1496,209 @@ body {
 }
 
 .close-btn {
-  background: none;
+  background: transparent;
   border: none;
-  color: var(--text-muted);
   font-size: 24px;
+  color: var(--text-muted);
   cursor: pointer;
   line-height: 1;
 }
 
-.form-group {
-  margin-bottom: 14px;
-}
-
-.form-group label {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 6px;
-}
-
-.form-group input[type="text"] {
-  width: 100%;
-  background: var(--bg-surface-elevated);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-main);
-  padding: 10px 12px;
-  border-radius: 8px;
-  font-size: 13px;
-  outline: none;
-}
-
-.form-group input[type="text"]:focus {
-  border-color: var(--accent-glow);
-}
-
-.quick-presets {
+.modal-body {
   display: flex;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.preset-tag {
-  background: var(--bg-surface-elevated);
-  border: 1px solid var(--border-subtle);
-  color: var(--accent-glow);
-  font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.preset-tag:active {
-  background: var(--accent-primary);
-  color: white;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .checkbox-group label {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: 13px;
+  color: var(--text-light);
   cursor: pointer;
-  color: var(--text-main);
 }
 
-.modal-actions {
-  display: flex;
+.modal-actions-grid {
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 10px;
-  margin-top: 20px;
+  margin-top: 8px;
 }
 
-.btn-connect {
-  flex: 2;
-  background: var(--accent-primary);
-  color: white;
-  border: none;
-  padding: 12px;
+.btn-action.secondary {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-light);
   border-radius: 10px;
-  font-weight: 700;
-  font-size: 14px;
+  padding: 10px 14px;
+  font-size: 13px;
   cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+
+.btn-action.secondary:active {
+  background: var(--border-subtle);
+}
+
+.modal-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 8px 0;
 }
 
 .btn-disconnect {
-  flex: 1;
-  background: var(--bg-surface-elevated);
-  color: var(--danger);
-  border: 1px solid var(--danger);
-  padding: 12px;
+  width: 100%;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
   border-radius: 10px;
-  font-weight: 600;
+  padding: 12px;
   font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
+  font-family: inherit;
+}
+
+.hidden {
+  display: none !important;
 }
 
 STYLE_EOF
 
 cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 (() => {
-  // DOM Elements
+  // DOM Elements - Header & Status
   const statusIndicator = document.getElementById("statusIndicator");
   const statusText = document.getElementById("statusText");
+  const roomStatusBadge = document.getElementById("roomStatusBadge");
+  const currentRoomDisplay = document.getElementById("currentRoomDisplay");
+  const btnSettings = document.getElementById("btnSettings");
+  const btnLeaveRoom = document.getElementById("btnLeaveRoom");
+  const btnNotification = document.getElementById("btnNotification");
+  const btnClear = document.getElementById("btnClear");
+
+  // DOM Elements - Room Gate
+  const roomGate = document.getElementById("roomGate");
+  const gateForm = document.getElementById("gateForm");
+  const gateNickname = document.getElementById("gateNickname");
+  const gateRoomName = document.getElementById("gateRoomName");
+  const gateRoomPassword = document.getElementById("gateRoomPassword");
+  const btnTogglePassword = document.getElementById("btnTogglePassword");
+  const gateError = document.getElementById("gateError");
+  const gateErrorText = document.getElementById("gateErrorText");
+  const btnToggleAdvanced = document.getElementById("btnToggleAdvanced");
+  const advancedServerBlock = document.getElementById("advancedServerBlock");
+  const serverUrlInput = document.getElementById("serverUrl");
+  const btnEnterRoom = document.getElementById("btnEnterRoom");
+
+  // DOM Elements - Active Chat View
+  const chatView = document.getElementById("chatView");
+  const notifBanner = document.getElementById("notifBanner");
+  const btnEnableNotif = document.getElementById("btnEnableNotif");
   const chatMessages = document.getElementById("chatMessages");
   const chatForm = document.getElementById("chatForm");
   const messageInput = document.getElementById("messageInput");
-  const btnSettings = document.getElementById("btnSettings");
-  const btnClear = document.getElementById("btnClear");
+
+  // DOM Elements - Settings Modal
   const settingsModal = document.getElementById("settingsModal");
   const btnCloseSettings = document.getElementById("btnCloseSettings");
-  const btnConnect = document.getElementById("btnConnect");
-  const btnDisconnect = document.getElementById("btnDisconnect");
-  const serverUrlInput = document.getElementById("serverUrl");
-  const nicknameInput = document.getElementById("nickname");
-  const roomNameInput = document.getElementById("roomName");
+  const modalServerUrl = document.getElementById("modalServerUrl");
   const autoReconnectInput = document.getElementById("autoReconnect");
-  const btnOpenSettingsHero = document.getElementById("btnOpenSettingsHero");
+  const keepCredentialsInput = document.getElementById("keepCredentials");
+  const btnTestNotif = document.getElementById("btnTestNotif");
+  const btnMinimizeApp = document.getElementById("btnMinimizeApp");
+  const btnDisconnectModal = document.getElementById("btnDisconnectModal");
 
-  // State
+  // Application State
   let ws = null;
+  let heartbeatTimer = null;
   let reconnectTimer = null;
   let isConnecting = false;
   let isManualDisconnect = false;
+  let unreadCount = 0;
+  const originalTitle = document.title;
 
-  // Load Saved Settings
-  const savedSettings = JSON.parse(localStorage.getItem("rssh_chat_settings") || "{}");
-  if (savedSettings.serverUrl) {
-    serverUrlInput.value = savedSettings.serverUrl;
+  const state = {
+    nickname: "کاربر",
+    room: "",
+    password: "",
+    serverUrl: "",
+    autoReconnect: true,
+    keepCredentials: true,
+    isAuthenticated: false,
+  };
+
+  // 1. Load Saved Configuration & State
+  const savedConfig = JSON.parse(localStorage.getItem("rssh_chat_auth") || "{}");
+  if (savedConfig.serverUrl) {
+    state.serverUrl = savedConfig.serverUrl;
   } else if (window.location && window.location.host && !window.location.protocol.startsWith("file")) {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    serverUrlInput.value = `${proto}//${window.location.host}`;
+    state.serverUrl = `${proto}//${window.location.host}`;
+  } else {
+    state.serverUrl = "ws://193.168.175.227:8765";
   }
-  if (savedSettings.nickname) nicknameInput.value = savedSettings.nickname;
-  if (savedSettings.roomName) roomNameInput.value = savedSettings.roomName;
-  if (savedSettings.autoReconnect !== undefined) autoReconnectInput.checked = savedSettings.autoReconnect;
 
-  function saveSettings() {
-    const settings = {
-      serverUrl: serverUrlInput.value.trim(),
-      nickname: nicknameInput.value.trim() || "گوشی من",
-      roomName: roomNameInput.value.trim() || "general",
-      autoReconnect: autoReconnectInput.checked
+  if (savedConfig.nickname) state.nickname = savedConfig.nickname;
+  if (savedConfig.room) state.room = savedConfig.room;
+  if (savedConfig.password) state.password = savedConfig.password;
+  if (savedConfig.autoReconnect !== undefined) state.autoReconnect = savedConfig.autoReconnect;
+  if (savedConfig.keepCredentials !== undefined) state.keepCredentials = savedConfig.keepCredentials;
+
+  // Initialize Form Values
+  serverUrlInput.value = state.serverUrl;
+  modalServerUrl.value = state.serverUrl;
+  gateNickname.value = state.nickname;
+  gateRoomName.value = state.room;
+  if (state.keepCredentials && state.password) {
+    gateRoomPassword.value = state.password;
+  }
+  autoReconnectInput.checked = state.autoReconnect;
+  keepCredentialsInput.checked = state.keepCredentials;
+
+  function persistSettings() {
+    state.serverUrl = sanitizeServerUrl(serverUrlInput.value.trim() || modalServerUrl.value.trim());
+    state.nickname = gateNickname.value.trim() || "کاربر";
+    state.autoReconnect = autoReconnectInput.checked;
+    state.keepCredentials = keepCredentialsInput.checked;
+
+    const dataToSave = {
+      serverUrl: state.serverUrl,
+      nickname: state.nickname,
+      autoReconnect: state.autoReconnect,
+      keepCredentials: state.keepCredentials,
+      room: state.keepCredentials ? state.room : "",
+      password: state.keepCredentials ? state.password : "",
     };
-    localStorage.setItem("rssh_chat_settings", JSON.stringify(settings));
-    return settings;
+    localStorage.setItem("rssh_chat_auth", JSON.stringify(dataToSave));
   }
 
-  // Native Bridge Helper
-  function nativeVibrate(ms = 40) {
+  function sanitizeServerUrl(raw) {
+    let url = (raw || "").trim();
+    if (!url) {
+      if (window.location && window.location.host && !window.location.protocol.startsWith("file")) {
+        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+        return `${proto}//${window.location.host}`;
+      }
+      return "ws://193.168.175.227:8765";
+    }
+    // Clean duplicate prefixes
+    if (url.startsWith("ws://http://")) url = "ws://" + url.slice(15);
+    else if (url.startsWith("wss://https://")) url = "wss://" + url.slice(16);
+    else if (url.startsWith("http://")) url = "ws://" + url.slice(7);
+    else if (url.startsWith("https://")) url = "wss://" + url.slice(8);
+    else if (!url.startsWith("ws://") && !url.startsWith("wss://")) url = "ws://" + url;
+    return url;
+  }
+
+  // 2. Native Bridge & Notification Helpers
+  function nativeVibrate(ms = 60) {
     if (window.ChatNative && window.ChatNative.vibrate) {
       window.ChatNative.vibrate(ms);
+    } else if (navigator.vibrate) {
+      navigator.vibrate(ms);
     }
   }
 
@@ -1176,24 +1708,108 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     }
   }
 
-  function updateStatus(state, message) {
-    statusIndicator.className = `status-dot ${state}`;
-    statusText.textContent = message;
+  function playAudioChime() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(587.33, now); // D5
+      osc.frequency.setValueAtTime(880.00, now + 0.09); // A5
+
+      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.3);
+    } catch (ignored) {}
   }
 
-  // Format Time
+  function triggerBackgroundNotification(sender, text, room) {
+    // 1. Android APK Native Notification (Heads-up & Lock Screen)
+    if (window.ChatNative && window.ChatNative.showNotification) {
+      window.ChatNative.showNotification(sender, text, room);
+      nativeVibrate(250);
+      return;
+    }
+
+    // 2. Web Browser Notification
+    playAudioChime();
+    nativeVibrate(200);
+
+    if ("Notification" in window && Notification.permission === "granted") {
+      try {
+        const notif = new Notification(`${sender} («${room}»)`, {
+          body: text,
+          icon: "apple-touch-icon.png",
+          badge: "apple-touch-icon.png",
+          tag: "rssh-chat-msg",
+          renotify: true,
+        });
+        notif.onclick = () => {
+          window.focus();
+          notif.close();
+        };
+      } catch (e) {}
+    }
+
+    unreadCount++;
+    document.title = `(${unreadCount}) پیام جدید - رخش چت`;
+  }
+
+  // Reset title on window focus
+  window.addEventListener("focus", () => {
+    unreadCount = 0;
+    document.title = originalTitle;
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      unreadCount = 0;
+      document.title = originalTitle;
+    }
+  });
+
+  function updateStatus(dotClass, text) {
+    statusIndicator.className = `status-dot ${dotClass}`;
+    statusText.textContent = text;
+  }
+
+  function showGateError(msg) {
+    gateErrorText.textContent = msg;
+    gateError.classList.remove("hidden");
+    nativeVibrate(150);
+  }
+
+  function hideGateError() {
+    gateError.classList.add("hidden");
+  }
+
   function formatTime(date = new Date()) {
     const h = String(date.getHours()).padStart(2, "0");
     const m = String(date.getMinutes()).padStart(2, "0");
     return `${h}:${m}`;
   }
 
-  // Append Message to UI
-  function appendMessage({ type = "peer", sender = "", text = "", time = "" }) {
-    // Remove welcome box if present
-    const welcome = chatMessages.querySelector(".welcome-box");
-    if (welcome) welcome.remove();
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
 
+  function appendMessage({ type = "peer", sender = "", text = "", time = "" }) {
     const wrapper = document.createElement("div");
     wrapper.className = `msg-wrapper ${type}`;
 
@@ -1228,172 +1844,262 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
-  function escapeHtml(str) {
-    if (!str) return "";
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
+  // 3. Room Switching & View Management
+  function enterChatView(roomName) {
+    state.isAuthenticated = true;
+    hideGateError();
+    roomGate.classList.add("hidden");
+    chatView.classList.remove("hidden");
+    btnLeaveRoom.classList.remove("hidden");
+    btnClear.classList.remove("hidden");
+    roomStatusBadge.classList.remove("hidden");
+    currentRoomDisplay.textContent = roomName;
+    messageInput.focus();
+
+    // Check browser notification permission
+    if ("Notification" in window && Notification.permission === "default") {
+      notifBanner.classList.remove("hidden");
+    } else {
+      notifBanner.classList.add("hidden");
+    }
   }
 
-  // Connect to WebSocket Server
-  function connect() {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+  function returnToRoomGate() {
+    state.isAuthenticated = false;
+    roomGate.classList.remove("hidden");
+    chatView.classList.add("hidden");
+    btnLeaveRoom.classList.add("hidden");
+    btnClear.classList.add("hidden");
+    roomStatusBadge.classList.add("hidden");
+    updateStatus("disconnected", "اتاقی متصل نیست");
+  }
+
+  // 4. WebSocket & Room Protocol
+  function connectAndJoinRoom(room, password, nickname) {
+    if (isConnecting) return;
+
+    state.room = room.trim();
+    state.password = password.trim();
+    state.nickname = nickname.trim() || "کاربر";
+    state.serverUrl = sanitizeServerUrl(serverUrlInput.value || modalServerUrl.value);
+    persistSettings();
+
+    if (!state.room || !state.password) {
+      showGateError("لطفاً نام اتاق و رمز عبور سخت آن را وارد کنید.");
       return;
     }
 
-    const settings = saveSettings();
-    let url = settings.serverUrl;
-    if (!url) {
-      nativeToast("لطفاً آدرس سرور را وارد کنید");
-      openSettings();
-      return;
-    }
-
-    // Auto-fix and sanitize protocol
-    url = url.trim();
-    if (url.startsWith("ws://http://")) {
-      url = "ws://" + url.slice(15);
-    } else if (url.startsWith("wss://https://")) {
-      url = "wss://" + url.slice(16);
-    } else if (url.startsWith("http://")) {
-      url = "ws://" + url.slice(7);
-    } else if (url.startsWith("https://")) {
-      url = "wss://" + url.slice(8);
-    } else if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
-      url = "ws://" + url;
-    }
-    serverUrlInput.value = url;
-
+    hideGateError();
     clearTimeout(reconnectTimer);
+    clearInterval(heartbeatTimer);
     isManualDisconnect = false;
     isConnecting = true;
-    updateStatus("connecting", "در حال اتصال...");
+    updateStatus("connecting", "در حال بررسی رمز...");
 
-    appendMessage({
-      type: "system",
-      text: `در حال اتصال به ${url}...`
-    });
+    if (ws) {
+      try {
+        ws.close();
+      } catch (e) {}
+      ws = null;
+    }
 
     try {
-      ws = new WebSocket(url);
+      ws = new WebSocket(state.serverUrl);
     } catch (err) {
-      updateStatus("disconnected", "خطای پروتکل");
-      appendMessage({
-        type: "system",
-        text: `خطا در باز کردن وب‌سوکت: ${err.message}`
-      });
       isConnecting = false;
+      updateStatus("disconnected", "خطای پروتکل");
+      showGateError(`خطا در ارتباط با وب‌سوکت: ${err.message}`);
       return;
     }
 
     ws.onopen = () => {
       isConnecting = false;
-      updateStatus("connected", "متصل");
-      nativeVibrate(60);
-      nativeToast("به سرور متصل شدید");
-      closeSettings();
+      updateStatus("connecting", "در حال تایید دسترسی...");
 
-      appendMessage({
-        type: "system",
-        text: `با موفقیت به سرور متصل شدید`
-      });
-
-      // Send join message if room / nickname configured
+      // Send join room authentication payload
       const joinPayload = {
         type: "join",
-        sender: settings.nickname,
-        room: settings.roomName,
+        room: state.room,
+        password: state.password,
+        sender: state.nickname,
         time: formatTime()
       };
       try {
         ws.send(JSON.stringify(joinPayload));
       } catch (e) {}
+
+      // Start 20s Keepalive Heartbeat
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: "ping" }));
+          } catch (e) {}
+        }
+      }, 20000);
     };
 
     ws.onmessage = (event) => {
-      nativeVibrate(30);
       let data = event.data;
+      let parsed = null;
       try {
-        const parsed = JSON.parse(data);
-        if (parsed.type === "system") {
-          appendMessage({ type: "system", text: parsed.text || parsed.message });
-        } else {
-          const isMe = parsed.sender === settings.nickname;
-          appendMessage({
-            type: isMe ? "me" : "peer",
-            sender: parsed.sender || "Peer",
-            text: parsed.text || parsed.message || JSON.stringify(parsed),
-            time: parsed.time || formatTime()
-          });
-        }
-      } catch (err) {
-        // Plain text message format
+        parsed = JSON.parse(data);
+      } catch (e) {
+        return;
+      }
+
+      if (!parsed) return;
+
+      // Authentication Success
+      if (parsed.type === "auth_success") {
+        updateStatus("connected", "متصل");
+        nativeToast(`وارد اتاق «${parsed.room || state.room}» شدید`);
+        enterChatView(parsed.room || state.room);
         appendMessage({
-          type: "peer",
-          sender: "سرور / سرور چت",
-          text: data,
-          time: formatTime()
+          type: "system",
+          text: `به اتاق امن و اختصاصی «${parsed.room || state.room}» خوش آمدید.`
         });
+        return;
+      }
+
+      // Authentication Error (Wrong Password or Access Denied)
+      if (parsed.type === "auth_error") {
+        updateStatus("disconnected", "رمز نادرست");
+        showGateError(parsed.text || "رمز عبور اتاق نادرست است! اتصال ممکن نیست.");
+        returnToRoomGate();
+        try {
+          ws.close();
+        } catch (e) {}
+        ws = null;
+        return;
+      }
+
+      // System Messages within the room
+      if (parsed.type === "system") {
+        appendMessage({
+          type: "system",
+          text: parsed.text || parsed.message
+        });
+        return;
+      }
+
+      // Incoming Chat Messages
+      if (parsed.type === "chat") {
+        const isMe = parsed.sender === state.nickname;
+        appendMessage({
+          type: isMe ? "me" : "peer",
+          sender: parsed.sender,
+          text: parsed.text,
+          time: parsed.time || formatTime()
+        });
+
+        // Trigger Notification if client is in background / phone locked
+        const isAppHidden = document.hidden || 
+                            !document.hasFocus() || 
+                            (window.ChatNative && window.ChatNative.isAppForeground && !window.ChatNative.isAppForeground());
+
+        if (!isMe) {
+          if (isAppHidden) {
+            triggerBackgroundNotification(parsed.sender, parsed.text, state.room);
+          } else {
+            playAudioChime();
+            nativeVibrate(30);
+          }
+        }
       }
     };
 
-    ws.onerror = (e) => {
-      // ws onerror
+    ws.onerror = () => {
+      // Handled in onclose
     };
 
     ws.onclose = (event) => {
       isConnecting = false;
-      updateStatus("disconnected", "قطع ارتباط");
-      appendMessage({
-        type: "system",
-        text: `ارتباط با سرور قطع شد (${event.code ? "کد: " + event.code : "نامشخص"})`
-      });
+      clearInterval(heartbeatTimer);
 
-      if (!isManualDisconnect && settings.autoReconnect) {
-        scheduleReconnect();
+      if (state.isAuthenticated) {
+        updateStatus("disconnected", "ارتباط قطع شد");
+        appendMessage({
+          type: "system",
+          text: "ارتباط با سرور چت قطع شد. در حال تلاش برای اتصال مجدد..."
+        });
+
+        if (!isManualDisconnect && state.autoReconnect) {
+          scheduleReconnect();
+        }
+      } else {
+        updateStatus("disconnected", "قطع");
       }
     };
   }
 
-  function disconnect() {
-    isManualDisconnect = true;
-    clearTimeout(reconnectTimer);
-    if (ws) {
-      ws.close();
-      ws = null;
-    }
-    updateStatus("disconnected", "قطع شد");
-    nativeToast("ارتباط با سرور متوقف شد");
-  }
-
   function scheduleReconnect() {
     clearTimeout(reconnectTimer);
-    updateStatus("connecting", "تلاش مجدد تا ۴ ثانیه...");
+    updateStatus("connecting", "اتصال مجدد تا ۳ ثانیه...");
     reconnectTimer = setTimeout(() => {
-      connect();
-    }, 4000);
+      if (state.room && state.password) {
+        connectAndJoinRoom(state.room, state.password, state.nickname);
+      }
+    }, 3500);
   }
 
-  // Send Message
+  function leaveRoom() {
+    isManualDisconnect = true;
+    clearTimeout(reconnectTimer);
+    clearInterval(heartbeatTimer);
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: "leave" }));
+        ws.close();
+      } catch (e) {}
+    }
+    ws = null;
+    returnToRoomGate();
+    nativeToast("از اتاق خارج شدید");
+  }
+
+  // 5. User Interactions & Event Handlers
+  gateForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const room = gateRoomName.value.trim();
+    const password = gateRoomPassword.value.trim();
+    const nickname = gateNickname.value.trim();
+
+    if (!room || !password) {
+      showGateError("لطفاً هم نام اتاق و هم رمز عبور سخت را وارد کنید.");
+      return;
+    }
+    connectAndJoinRoom(room, password, nickname);
+  });
+
+  // Password Visibility Toggle
+  btnTogglePassword.addEventListener("click", () => {
+    const isPassword = gateRoomPassword.type === "password";
+    gateRoomPassword.type = isPassword ? "text" : "password";
+    btnTogglePassword.textContent = isPassword ? "🙈" : "👁️";
+  });
+
+  // Advanced Server Settings Toggle
+  btnToggleAdvanced.addEventListener("click", () => {
+    advancedServerBlock.classList.toggle("hidden");
+  });
+
+  // Chat Send Form
   chatForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const text = messageInput.value.trim();
     if (!text) return;
 
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      nativeToast("ابتدا به سرور وصل شوید");
-      openSettings();
+      nativeToast("ارتباط با سرور برقرار نیست");
       return;
     }
 
-    const settings = saveSettings();
     const payload = {
       type: "chat",
-      sender: settings.nickname,
-      room: settings.roomName,
+      room: state.room,
+      sender: state.nickname,
       text: text,
       time: formatTime()
     };
@@ -1402,7 +2108,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       ws.send(JSON.stringify(payload));
       appendMessage({
         type: "me",
-        sender: settings.nickname,
+        sender: state.nickname,
         text: text,
         time: formatTime()
       });
@@ -1413,61 +2119,104 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     }
   });
 
-  // Presets click
-  document.querySelectorAll(".preset-tag").forEach((tag) => {
-    tag.addEventListener("click", () => {
-      serverUrlInput.value = tag.getAttribute("data-url");
+  // Leave room button
+  btnLeaveRoom.addEventListener("click", leaveRoom);
+  btnDisconnectModal.addEventListener("click", () => {
+    closeSettings();
+    leaveRoom();
+  });
+
+  // Clear messages button
+  btnClear.addEventListener("click", () => {
+    chatMessages.innerHTML = "";
+    appendMessage({
+      type: "system",
+      text: "صفحه چت پاکسازی شد."
     });
+  });
+
+  // Notification Permission Request
+  function requestNotificationAccess() {
+    if ("Notification" in window) {
+      Notification.requestPermission().then((permission) => {
+        if (permission === "granted") {
+          notifBanner.classList.add("hidden");
+          nativeToast("اعلان‌های صفحه قفل فعال شد");
+          triggerBackgroundNotification("رخش چت", "اعلان‌ها فعال شدند و آماده دریافت پیام روی صفحه قفل هستند.", state.room || "سیستم");
+        } else {
+          nativeToast("مجوز اعلان صادر نشد");
+        }
+      });
+    } else {
+      nativeToast("اعلان در این مرورگر پشتیبانی نمی‌شود");
+    }
+  }
+
+  btnEnableNotif?.addEventListener("click", requestNotificationAccess);
+  btnNotification.addEventListener("click", () => {
+    if (window.ChatNative && window.ChatNative.showNotification) {
+      window.ChatNative.showNotification("تست اعلان رخش چت", "پیام تستی روی صفحه قفل با موفقیت نمایش داده شد.", state.room || "تست");
+      nativeToast("اعلان تستی ارسال شد");
+    } else {
+      requestNotificationAccess();
+    }
+  });
+
+  btnTestNotif?.addEventListener("click", () => {
+    if (window.ChatNative && window.ChatNative.showNotification) {
+      window.ChatNative.showNotification("تست اعلان صفحه قفل", "سرویس فعال است و پیام‌ها در حالت قفل بودن گوشی دریافت می‌شوند.", state.room || "عمومی");
+      nativeToast("اعلان تستی ارسال شد");
+    } else {
+      triggerBackgroundNotification("تست سیستم", "این یک پیام تستی برای بررسی عملکرد نوتیفیکیشن است.", state.room || "تست");
+    }
+  });
+
+  // Minimize App Button (Puts Android APK to background without closing socket)
+  btnMinimizeApp?.addEventListener("click", () => {
+    closeSettings();
+    if (window.ChatNative && window.ChatNative.minimizeApp) {
+      window.ChatNative.minimizeApp();
+    } else {
+      nativeToast("برای پنهان شدن صفحه، دکمه هوم یا پاور گوشی را بزنید");
+    }
   });
 
   // Settings Modal Controls
   function openSettings() {
+    modalServerUrl.value = state.serverUrl;
     settingsModal.classList.remove("hidden");
   }
 
   function closeSettings() {
     settingsModal.classList.add("hidden");
-    saveSettings();
+    state.serverUrl = sanitizeServerUrl(modalServerUrl.value);
+    serverUrlInput.value = state.serverUrl;
+    persistSettings();
   }
 
   btnSettings.addEventListener("click", openSettings);
-  btnOpenSettingsHero?.addEventListener("click", openSettings);
   btnCloseSettings.addEventListener("click", closeSettings);
 
   settingsModal.addEventListener("click", (e) => {
-    if (e.target === settingsModal) {
-      closeSettings();
-    }
+    if (e.target === settingsModal) closeSettings();
   });
 
-  btnConnect.addEventListener("click", () => {
-    connect();
-  });
-
-  btnDisconnect.addEventListener("click", () => {
-    disconnect();
-  });
-
-  btnClear.addEventListener("click", () => {
-    chatMessages.innerHTML = "";
-    appendMessage({
-      type: "system",
-      text: "تاریخچه چت پاکسازی شد"
-    });
-  });
-
-  // Back button handling in Android WebView
+  // Android Native Back Button Handler
   window.onBackPressed = () => {
     if (!settingsModal.classList.contains("hidden")) {
       closeSettings();
-      return true; // handled
+      return true;
     }
-    return false; // let activity exit
+    if (state.isAuthenticated) {
+      // Don't close app on back, let native moveTaskToBack minimize it
+      return false;
+    }
+    return false;
   };
 
-  // Initial Auto Connect if configured
-  if (savedSettings.serverUrl && savedSettings.autoReconnect) {
-    connect();
+  // Initial Auto-Join if saved credentials exist
+  if (state.keepCredentials && state.room && state.password && state.autoReconnect) {
+    connectAndJoinRoom(state.room, state.password, state.nickname);
   }
 })();
 
@@ -1477,8 +2226,8 @@ cat << 'MANIFEST_EOF' > "${INSTALL_DIR}/web/manifest.json"
 {
   "name": "رخش چت | Rakhssh Chat",
   "short_name": "Rakhssh Chat",
-  "version": "1.1.0",
-  "description": "کلاینت چت مستقل، سبک و امن متصل به سرور رخش",
+  "version": "1.2.0",
+  "description": "کلاینت چت مستقل، سبک و امن با اتاق‌های رمزگذاری‌شده و نوتیفیکیشن صفحه قفل",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

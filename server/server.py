@@ -3,8 +3,10 @@
 Lightweight Zero-Dependency WebSocket & Web Chat Server (Python 3 Standard Library).
 RFC 6455 compliant. Runs out of the box with zero pip dependencies.
 Supports:
+  - Private password-protected rooms (Zero room listing / Strict room isolation)
   - WebSocket clients (Android Chat APK: ws://<ip>:8765)
   - Web browser clients (http://<ip>:8765)
+  - Background keepalive (RFC 6455 Ping/Pong + JSON Heartbeats)
   - Health check endpoint (http://<ip>:8765/health)
   - Headless / Systemd service operation with zero TTY errors
   - Graceful shutdown handling (SIGINT / SIGTERM)
@@ -13,9 +15,11 @@ Supports:
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
+import secrets
 import signal
 import socket
 import struct
@@ -23,7 +27,16 @@ import sys
 import time
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+VERSION = "1.2.0"
+
+# Connected WebSocket clients
 clients = set()
+
+# client_info: writer -> {"peer": (ip, port), "room": str|None, "nickname": str|None, "authenticated": bool}
+client_info = {}
+
+# rooms: room_name -> {"salt": hex, "hash": hex, "created_at": float, "creator": str, "clients": set(writers)}
+rooms = {}
 
 # Determine Web Directory for static files
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,9 +65,9 @@ FALLBACK_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div class="card">
-    <div class="badge">● سرور فعال و در حال اجرا است</div>
+    <div class="badge">● سرور فعال و در حال اجرا است (v1.2.0)</div>
     <h1>سرور چت رخش (Rakhssh)</h1>
-    <p>سرور چت با موفقیت روی لینوکس راه‌اندازی شد. برای اتصال با اپلیکیشن اندروید (chat.apk)، آدرس زیر را در تنظیمات وارد کنید:</p>
+    <p>سرور چت با اتاق‌های رمزگذاری شده روی لینوکس راه‌اندازی شد. برای اتصال با اپلیکیشن اندروید (chat.apk)، آدرس زیر را در تنظیمات وارد کنید:</p>
     <div class="code-box" id="wsUrl">ws://YOUR-SERVER-IP:8765</div>
     <p style="font-size: 0.85rem; color: #64748b;">پروتکل: RFC 6455 WebSocket | پورت: 8765</p>
   </div>
@@ -64,6 +77,11 @@ FALLBACK_HTML = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+def hash_password(password: str, salt: str) -> str:
+    """Compute cryptographic hash of password using salt."""
+    return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
 
 
 def get_local_ips():
@@ -90,11 +108,11 @@ def make_handshake_response(key: str) -> bytes:
     return resp.encode()
 
 
-def encode_frame(payload: str) -> bytes:
+def encode_frame(payload: str, opcode: int = 0x1) -> bytes:
     """Encode text payload into an unmasked RFC 6455 WebSocket frame."""
-    data = payload.encode("utf-8")
+    data = payload.encode("utf-8") if isinstance(payload, str) else payload
     length = len(data)
-    frame = bytearray([0x81])  # FIN + Text Opcode (0x1)
+    frame = bytearray([0x80 | (opcode & 0x0F)])  # FIN + Opcode
 
     if length <= 125:
         frame.append(length)
@@ -144,14 +162,19 @@ async def decode_frame(reader: asyncio.StreamReader):
     if is_masked and mask:
         data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
 
+    if opcode in (0x9, 0xA):  # Ping / Pong
+        return opcode, data
+
     return opcode, data.decode("utf-8", errors="replace")
 
 
-async def broadcast(message_json: str, sender_writer=None):
-    """Broadcast a message frame to all connected clients."""
+async def broadcast_room(room_name: str, message_json: str, sender_writer=None):
+    """Broadcast a message frame ONLY to authenticated clients inside a specific room."""
+    if not room_name or room_name not in rooms:
+        return
     frame = encode_frame(message_json)
     dead_clients = set()
-    for writer in list(clients):
+    for writer in list(rooms[room_name]["clients"]):
         if writer is not sender_writer:
             try:
                 writer.write(frame)
@@ -159,7 +182,9 @@ async def broadcast(message_json: str, sender_writer=None):
             except Exception:
                 dead_clients.add(writer)
     for dc in dead_clients:
+        rooms[room_name]["clients"].discard(dc)
         clients.discard(dc)
+        client_info.pop(dc, None)
 
 
 def get_static_file(path: str):
@@ -223,7 +248,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     body = json.dumps({
                         "status": "ok",
                         "service": "rakhssh-chat",
-                        "version": "1.1.0",
+                        "version": VERSION,
                         "active_clients": len(clients),
                         "timestamp": int(time.time()),
                     }).encode("utf-8")
@@ -272,34 +297,216 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         await writer.drain()
 
         clients.add(writer)
+        client_info[writer] = {
+            "peer": peername,
+            "room": None,
+            "nickname": None,
+            "authenticated": False,
+        }
         print(f"\n[+] Client connected: {peername[0]}:{peername[1]} (Active clients: {len(clients)})")
         if sys.stdin is not None and sys.stdin.isatty():
             print("Server (type message and press Enter): ", end="", flush=True)
 
-        # Send welcome message frame
+        # Send welcome message frame (Prompt to join a private room)
         welcome = json.dumps({
             "type": "system",
             "sender": "Server",
-            "text": "به سرور چت متصل شدید. می‌توانید پیام ارسال کنید."
-        })
+            "text": "به سرور چت امن رخش متصل شدید. لطفاً نام اتاق و رمز عبور را وارد کنید."
+        }, ensure_ascii=False)
         writer.write(encode_frame(welcome))
         await writer.drain()
 
         # 3. Message Loop
         while True:
             opcode, message = await decode_frame(reader)
-            if opcode is None or opcode == 0x8:
+            if opcode is None or opcode == 0x8:  # Client closed
                 break
+
+            if opcode == 0x9:  # RFC 6455 Ping frame -> Respond with Pong frame (0xA)
+                writer.write(encode_frame(message or b"", opcode=0xA))
+                await writer.drain()
+                continue
+
+            if opcode == 0xA:  # Pong frame received
+                continue
+
             if opcode == 0x1 and message:  # Text frame
-                print(f"\r[{peername[0]}]: {message}")
-                if sys.stdin is not None and sys.stdin.isatty():
-                    print("Server (type message and press Enter): ", end="", flush=True)
-                await broadcast(message, sender_writer=writer)
+                try:
+                    payload = json.loads(message)
+                except Exception:
+                    continue
+
+                msg_type = payload.get("type")
+
+                # Heartbeat Ping from Web/Android client
+                if msg_type == "ping":
+                    pong_resp = json.dumps({"type": "pong", "time": int(time.time())})
+                    writer.write(encode_frame(pong_resp))
+                    await writer.drain()
+                    continue
+
+                # Room Join / Authentication request
+                if msg_type == "join":
+                    raw_room = str(payload.get("room") or "").strip()
+                    password = str(payload.get("password") or "").strip()
+                    sender = str(payload.get("sender") or "").strip() or "کاربر"
+
+                    if not raw_room:
+                        err = json.dumps({
+                            "type": "auth_error",
+                            "text": "نام اتاق نمی‌تواند خالی باشد."
+                        }, ensure_ascii=False)
+                        writer.write(encode_frame(err))
+                        await writer.drain()
+                        continue
+
+                    if not password:
+                        err = json.dumps({
+                            "type": "auth_error",
+                            "text": "رمز عبور اتاق الزامی است."
+                        }, ensure_ascii=False)
+                        writer.write(encode_frame(err))
+                        await writer.drain()
+                        continue
+
+                    room_id = raw_room.lower()
+
+                    # Check or create room
+                    if room_id not in rooms:
+                        salt = secrets.token_hex(16)
+                        pw_hash = hash_password(password, salt)
+                        rooms[room_id] = {
+                            "name": raw_room,
+                            "salt": salt,
+                            "hash": pw_hash,
+                            "created_at": time.time(),
+                            "creator": sender,
+                            "clients": set(),
+                        }
+                        print(f"🔒 [Room Created] '{room_id}' by '{sender}' from {peername[0]}")
+                    else:
+                        salt = rooms[room_id]["salt"]
+                        expected_hash = rooms[room_id]["hash"]
+                        provided_hash = hash_password(password, salt)
+                        if not hmac.compare_digest(provided_hash, expected_hash):
+                            print(f"⛔ [Auth Failed] '{sender}' wrong password for '{room_id}' from {peername[0]}")
+                            err = json.dumps({
+                                "type": "auth_error",
+                                "room": raw_room,
+                                "text": "رمز عبور اتاق نادرست است! دسترسی غیرمجاز."
+                            }, ensure_ascii=False)
+                            writer.write(encode_frame(err))
+                            await writer.drain()
+                            continue
+
+                    # Remove from old room if already joined
+                    old_room = client_info[writer].get("room")
+                    if old_room and old_room in rooms:
+                        rooms[old_room]["clients"].discard(writer)
+
+                    # Authorize client in room
+                    rooms[room_id]["clients"].add(writer)
+                    client_info[writer] = {
+                        "peer": peername,
+                        "room": room_id,
+                        "room_display": raw_room,
+                        "nickname": sender,
+                        "authenticated": True,
+                    }
+
+                    print(f"🔑 [Auth Success] '{sender}' joined room '{room_id}' (Members: {len(rooms[room_id]['clients'])})")
+
+                    success_resp = json.dumps({
+                        "type": "auth_success",
+                        "room": raw_room,
+                        "sender": sender,
+                        "text": f"با موفقیت به اتاق امن «{raw_room}» متصل شدید."
+                    }, ensure_ascii=False)
+                    writer.write(encode_frame(success_resp))
+                    await writer.drain()
+
+                    # Notify other members of this room ONLY
+                    join_announce = json.dumps({
+                        "type": "system",
+                        "room": raw_room,
+                        "text": f"«{sender}» وارد اتاق شد."
+                    }, ensure_ascii=False)
+                    await broadcast_room(room_id, join_announce, sender_writer=writer)
+                    continue
+
+                # Room Chat message
+                if msg_type == "chat":
+                    info = client_info.get(writer)
+                    if not info or not info.get("authenticated") or not info.get("room"):
+                        err = json.dumps({
+                            "type": "auth_error",
+                            "text": "خطا: شما ابتدا باید با نام و رمز عبور وارد یک اتاق شوید."
+                        }, ensure_ascii=False)
+                        writer.write(encode_frame(err))
+                        await writer.drain()
+                        continue
+
+                    current_room = info["room"]
+                    display_room = info.get("room_display", current_room)
+                    sender = info["nickname"]
+                    text = str(payload.get("text") or "").strip()
+                    time_str = payload.get("time") or time.strftime("%H:%M")
+
+                    if not text:
+                        continue
+
+                    print(f"[{display_room}] [{sender}]: {text}")
+                    if sys.stdin is not None and sys.stdin.isatty():
+                        print("Server (type message and press Enter): ", end="", flush=True)
+
+                    out_msg = json.dumps({
+                        "type": "chat",
+                        "room": display_room,
+                        "sender": sender,
+                        "text": text,
+                        "time": time_str
+                    }, ensure_ascii=False)
+
+                    # Strictly broadcast only to members of this room
+                    await broadcast_room(current_room, out_msg, sender_writer=writer)
+                    continue
+
+                # Leave room request
+                if msg_type == "leave":
+                    info = client_info.get(writer)
+                    if info and info.get("room"):
+                        r = info["room"]
+                        s = info.get("nickname", "کاربر")
+                        if r in rooms:
+                            rooms[r]["clients"].discard(writer)
+                            leave_msg = json.dumps({
+                                "type": "system",
+                                "room": info.get("room_display", r),
+                                "text": f"«{s}» از اتاق خارج شد."
+                            }, ensure_ascii=False)
+                            await broadcast_room(r, leave_msg)
+                        info["room"] = None
+                        info["authenticated"] = False
+                    continue
 
     except Exception:
         pass
     finally:
         clients.discard(writer)
+        info = client_info.pop(writer, None)
+        if info and info.get("authenticated") and info.get("room"):
+            r = info["room"]
+            s = info.get("nickname", "کاربر")
+            if r in rooms:
+                rooms[r]["clients"].discard(writer)
+                if rooms[r]["clients"]:
+                    leave_msg = json.dumps({
+                        "type": "system",
+                        "room": info.get("room_display", r),
+                        "text": f"«{s}» از گفتگو خارج شد."
+                    }, ensure_ascii=False)
+                    asyncio.create_task(broadcast_room(r, leave_msg))
+
         try:
             writer.close()
             await writer.wait_closed()
@@ -311,7 +518,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 
 async def terminal_input_loop():
-    """Allows typing messages in terminal to broadcast to connected phones when interactive."""
+    """Allows typing broadcast messages from terminal if running interactively."""
     if sys.stdin is None or not sys.stdin.isatty():
         return
 
@@ -327,14 +534,17 @@ async def terminal_input_loop():
                 break
             text = line.decode().strip()
             if text:
-                msg = json.dumps({
-                    "type": "chat",
-                    "sender": "Server Terminal (کامپیوتر)",
-                    "text": text,
-                    "time": time.strftime("%H:%M")
-                })
-                await broadcast(msg)
-                print(f"Sent to {len(clients)} client(s): {text}")
+                # Terminal broadcast to all rooms
+                for room_id in list(rooms.keys()):
+                    msg = json.dumps({
+                        "type": "chat",
+                        "room": rooms[room_id].get("name", room_id),
+                        "sender": "Server Terminal (مدیر)",
+                        "text": text,
+                        "time": time.strftime("%H:%M")
+                    }, ensure_ascii=False)
+                    await broadcast_room(room_id, msg)
+                print(f"Sent to active rooms: {text}")
             print("Server (type message and press Enter): ", end="", flush=True)
     except Exception:
         pass
@@ -348,7 +558,7 @@ async def main():
     local_ips = get_local_ips()
 
     print("=" * 65)
-    print("      🚀 Rakhssh WebSocket & Web Chat Server")
+    print("      🚀 Rakhssh Secure WebSocket & Web Chat Server v1.2.0")
     print("=" * 65)
     print(f"Server is listening on {host}:{port}")
     print("\n👉 Use any of the following addresses:")
@@ -360,7 +570,7 @@ async def main():
 
     is_interactive = sys.stdin is not None and sys.stdin.isatty()
     if is_interactive:
-        print("You can also type messages below to send to connected phones:")
+        print("Interactive mode active. Type message and press Enter:")
         print("Server (type message and press Enter): ", end="", flush=True)
         async with server:
             await asyncio.gather(server.serve_forever(), terminal_input_loop())

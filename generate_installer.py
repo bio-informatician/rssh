@@ -19,7 +19,7 @@ WEB_ICON = os.path.join(BASE_DIR, "web", "apple-touch-icon.png")
 
 INSTALLER_PATH = os.path.join(BASE_DIR, "install.sh")
 STAGED_PATH = "/home/agent/agent-work/install.sh"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 STAGED_VERSIONED_PATH = f"/home/agent/agent-work/install-v{VERSION}.sh"
 
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Rakhssh Chat</title>
+  <title>رخش چت - پیام‌رسان امن و خصوصی</title>
   
   <!-- Apple iOS PWA Meta Tags -->
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -14,7 +14,7 @@
 
   <!-- Web App Manifest -->
   <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#0f172a">
+  <meta name="theme-color" content="#0b0f19">
 
   <link rel="stylesheet" href="style.css">
 </head>
@@ -23,25 +23,43 @@
     <!-- Top Bar -->
     <header class="app-header">
       <div class="header-left">
-        <button id="btnSettings" class="icon-btn" title="تنظیمات اتصال سرور">
-          <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none">
+        <button id="btnSettings" class="icon-btn" title="تنظیمات سرور">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+
+        <button id="btnLeaveRoom" class="icon-btn hidden" title="خروج از اتاق">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <polyline points="16 17 21 12 16 7"></polyline>
+            <line x1="21" y1="12" x2="9" y2="12"></line>
           </svg>
         </button>
       </div>
 
       <div class="header-center">
-        <div class="app-title">رخش چت <span class="version-tag">v1.1.0</span></div>
+        <div class="app-title">
+          <span>رخش چت</span>
+          <span class="version-tag">v1.2.0</span>
+        </div>
         <div class="connection-status">
           <span id="statusIndicator" class="status-dot disconnected"></span>
-          <span id="statusText">قطع اتصال</span>
+          <span id="statusText">در انتظار اتصال</span>
+          <span id="roomStatusBadge" class="room-pill hidden">🔒 <span id="currentRoomDisplay"></span></span>
         </div>
       </div>
 
       <div class="header-right">
-        <button id="btnClear" class="icon-btn" title="پاکسازی پیام‌ها">
+        <button id="btnNotification" class="icon-btn" title="اعلان پیام‌ها و صفحه قفل">
           <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+        </button>
+        <button id="btnClear" class="icon-btn hidden" title="پاکسازی صفحه چت">
+          <svg viewBox="0 0 24 24" width="19" height="19" stroke="currentColor" stroke-width="2" fill="none">
             <polyline points="3 6 5 6 21 6"></polyline>
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
           </svg>
@@ -49,90 +67,168 @@
       </div>
     </header>
 
-    <!-- Chat Messages Scroll View -->
-    <main id="chatMessages" class="messages-container">
-      <div class="welcome-box">
-        <div class="welcome-icon">💬</div>
-        <h3>کلاینت چت با سرور دلخواه</h3>
-        <p>برای شروع، آدرس سرور چت خود (مثلاً <code>ws://192.168.1.X:8765</code>) را در تنظیمات وارد کرده و متصل شوید.</p>
-        <button id="btnOpenSettingsHero" class="btn-primary-small">تنظیم آدرس سرور</button>
-      </div>
-    </main>
-
-    <!-- Bottom Input Bar -->
-    <footer class="app-footer">
-      <form id="chatForm" class="input-form">
-        <input 
-          type="text" 
-          id="messageInput" 
-          placeholder="پیام خود را بنویسید..." 
-          autocomplete="off" 
-          enterkeyhint="send"
-        />
-        <button type="submit" id="btnSend" class="send-btn" title="ارسال پیام">
-          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+    <!-- Room Gate: Shown when user is not inside an authorized room -->
+    <div id="roomGate" class="gate-container">
+      <div class="gate-card">
+        <div class="gate-shield-icon">
+          <svg viewBox="0 0 24 24" width="44" height="44" stroke="#38bdf8" stroke-width="1.8" fill="none">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            <path d="M9 12l2 2 4-4"></path>
           </svg>
-        </button>
-      </form>
-    </footer>
+        </div>
+
+        <h2>ورود به اتاق امن و اختصاصی</h2>
+        <p class="gate-desc">
+          فهرست گروه‌ها برای حفظ حریم خصوصی مخفی است. برای پیوستن، نام دقیق گروه و رمز عبور اختصاصی آن را وارد کنید.
+        </p>
+
+        <div id="gateError" class="alert-box danger hidden">
+          <span id="gateErrorText">رمز عبور اتاق نادرست است!</span>
+        </div>
+
+        <form id="gateForm" class="gate-form">
+          <div class="form-group">
+            <label for="gateNickname">نام شما (نام مستعار):</label>
+            <input 
+              type="text" 
+              id="gateNickname" 
+              placeholder="مثلاً: آرش، گوشی من، مدیر" 
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="gateRoomName">نام گروه / اتاق:</label>
+            <input 
+              type="text" 
+              id="gateRoomName" 
+              dir="ltr"
+              placeholder="مثلاً: team-secret یا family-vip" 
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="gateRoomPassword">رمز سخت و اختصاصی اتاق:</label>
+            <div class="password-wrapper">
+              <input 
+                type="password" 
+                id="gateRoomPassword" 
+                dir="ltr"
+                placeholder="رمز عبور قوی اتاق" 
+                required
+              />
+              <button type="button" id="btnTogglePassword" class="toggle-pwd-btn" title="نمایش/مخفی‌سازی رمز">
+                👁️
+              </button>
+            </div>
+            <small class="field-hint">اگر اتاق هنوز ایجاد نشده باشد، با این رمز ساخته می‌شود.</small>
+          </div>
+
+          <div class="form-group advanced-toggle-group">
+            <button type="button" id="btnToggleAdvanced" class="link-btn">
+              ⚙️ تنظیمات پیشرفته آدرس سرور
+            </button>
+            <div id="advancedServerBlock" class="hidden">
+              <input 
+                type="text" 
+                id="serverUrl" 
+                dir="ltr"
+                placeholder="ws://193.168.175.227:8765" 
+                value="" 
+              />
+            </div>
+          </div>
+
+          <button type="submit" id="btnEnterRoom" class="btn-primary-block">
+            <span class="btn-icon">🔒</span>
+            <span>ورود و اتصال به اتاق</span>
+          </button>
+        </form>
+
+        <div class="gate-footer-note">
+          <span>● پیام‌ها و اتاق‌ها کاملاً مجزا و محافظت‌شده هستند</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Chat View: Shown once authorized in a room -->
+    <div id="chatView" class="chat-container hidden">
+      <!-- Background Notification Prompt Banner (if browser permission needed) -->
+      <div id="notifBanner" class="notif-banner hidden">
+        <span>🔔 برای دریافت پیام‌ها روی صفحه قفل و در پس‌زمینه، دسترسی اعلان را تایید کنید.</span>
+        <button id="btnEnableNotif" class="btn-banner">فعال‌سازی</button>
+      </div>
+
+      <!-- Chat Messages Scroll View -->
+      <main id="chatMessages" class="messages-container">
+      </main>
+
+      <!-- Bottom Input Bar -->
+      <footer class="app-footer">
+        <form id="chatForm" class="input-form">
+          <input 
+            type="text" 
+            id="messageInput" 
+            placeholder="پیام خود را بنویسید..." 
+            autocomplete="off" 
+            enterkeyhint="send"
+          />
+          <button type="submit" id="btnSend" class="send-btn" title="ارسال پیام">
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </form>
+      </footer>
+    </div>
 
     <!-- Settings Modal Drawer -->
     <div id="settingsModal" class="modal-backdrop hidden">
       <div class="modal-card">
         <div class="modal-header">
-          <h3>تنظیمات اتصال سرور</h3>
+          <h3>تنظیمات اتصال و سرور</h3>
           <button id="btnCloseSettings" class="close-btn">&times;</button>
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label for="serverUrl">آدرس سرور (WebSocket یا HTTP):</label>
+            <label for="modalServerUrl">آدرس سرور WebSocket:</label>
             <input 
               type="text" 
-              id="serverUrl" 
+              id="modalServerUrl" 
               dir="ltr"
-              placeholder="ws://192.168.1.100:8765" 
-              value="ws://192.168.1.100:8765" 
-            />
-            <div class="quick-presets">
-              <span class="preset-tag" data-url="ws://127.0.0.1:8765">Localhost</span>
-              <span class="preset-tag" data-url="ws://192.168.1.100:8765">LAN IP</span>
-              <span class="preset-tag" data-url="ws://echo.websocket.events">Echo Test</span>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="nickname">نام مستعار شما:</label>
-            <input 
-              type="text" 
-              id="nickname" 
-              placeholder="مثلاً: گوشی من یا علیرضا" 
-              value="گوشی من" 
-            />
-          </div>
-
-          <div class="form-group">
-            <label for="roomName">شناسه اتاق / روم (اختیاری):</label>
-            <input 
-              type="text" 
-              id="roomName" 
-              dir="ltr"
-              placeholder="general یا 100-200-300" 
-              value="general" 
+              placeholder="ws://193.168.175.227:8765" 
             />
           </div>
 
           <div class="form-group checkbox-group">
             <label>
               <input type="checkbox" id="autoReconnect" checked />
-              اتصال مجدد خودکار در صورت قطعی
+              اتصال مجدد خودکار در صورت قطع شدن شبکه
             </label>
           </div>
 
+          <div class="form-group checkbox-group">
+            <label>
+              <input type="checkbox" id="keepCredentials" checked />
+              ذخیره نام اتاق و رمز در این دستگاه
+            </label>
+          </div>
+
+          <div class="modal-actions-grid">
+            <button id="btnTestNotif" class="btn-action secondary">
+              🔔 تست اعلان صفحه قفل
+            </button>
+            <button id="btnMinimizeApp" class="btn-action secondary">
+              ⬇️ رفتن به پس‌زمینه (بدون قطع شدن)
+            </button>
+          </div>
+
+          <div class="modal-divider"></div>
+
           <div class="modal-actions">
-            <button id="btnConnect" class="btn-connect">اتصال به سرور</button>
-            <button id="btnDisconnect" class="btn-disconnect">قطع اتصال</button>
+            <button id="btnDisconnectModal" class="btn-disconnect">قطع کامل و خروج از اتاق</button>
           </div>
         </div>
       </div>

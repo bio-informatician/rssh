@@ -96,11 +96,11 @@ def build_apk():
     ], "Linking APK and generating R.java via aapt2")
 
     # 4. Compile Java sources via javac
-    java_files = [
-        os.path.join(gen_dir, "org", "rssh", "chat", "R.java"),
-        os.path.join(JAVA_DIR, "ChatApplication.java"),
-        os.path.join(JAVA_DIR, "MainActivity.java")
-    ]
+    java_files = [os.path.join(gen_dir, "org", "rssh", "chat", "R.java")]
+    for root, _, files in os.walk(JAVA_DIR):
+        for f in files:
+            if f.endswith(".java"):
+                java_files.append(os.path.join(root, f))
     run_cmd([
         JAVAC,
         "-cp", ANDROID_JAR,
