@@ -31,7 +31,7 @@ import time
 import urllib.parse
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 # Connected WebSocket clients
 clients = set()
@@ -302,8 +302,13 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     peername = writer.get_extra_info("peername") or ("unknown", 0)
     headers = {}
     try:
-        # 1. Read HTTP request line
-        request_line = await reader.readline()
+        # 1. Read HTTP request line (with 15s timeout to avoid hanging TLS handshakes or probes)
+        try:
+            request_line = await asyncio.wait_for(reader.readline(), timeout=15.0)
+        except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError):
+            writer.close()
+            return
+
         if not request_line:
             writer.close()
             return
@@ -315,7 +320,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
         # Read headers
         while True:
-            line = await reader.readline()
+            try:
+                line = await asyncio.wait_for(reader.readline(), timeout=15.0)
+            except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError):
+                writer.close()
+                return
             if line in (b"\r\n", b"\n", b""):
                 break
             line_str = line.decode("utf-8", errors="replace").strip()
@@ -479,8 +488,6 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             }
                             apply_anti_dpi_padding(resp_dict)
                             writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
-                            await writer.drain()
-                            writer.write(make_http_json_response(200, resp_json))
                             await writer.drain()
                 else:
                     writer.write(b"HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n")

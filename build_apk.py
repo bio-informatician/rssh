@@ -178,6 +178,8 @@ def build_apk():
     versioned_apk = os.path.expanduser(f"~/agent-work/chat-v{version_name}.apk")
     shutil.copy2(final_apk, staged_apk)
     shutil.copy2(final_apk, versioned_apk)
+    shutil.copy2(final_apk, os.path.join(WEB_DIR, "chat.apk"))
+    shutil.copy2(final_apk, os.path.join(WEB_DIR, f"chat-v{version_name}.apk"))
 
     size_kb = os.path.getsize(staged_apk) / 1024
     print("=" * 65)

@@ -63,6 +63,7 @@
   let wsHandshakeTimer = null;
   let jitteredPingTimer = null;
   let decoyChaffTimer = null;
+  let heartbeatTimer = null;
   let reconnectTimer = null;
   let httpPollTimer = null;
   let queueRetryTimer = null;
@@ -92,7 +93,7 @@
 
   // 1. Load Saved Configuration & State
   const savedConfig = JSON.parse(localStorage.getItem("rssh_chat_auth") || "{}");
-  if (savedConfig.serverUrl) {
+  if (savedConfig.serverUrl && !savedConfig.serverUrl.includes("trycloudflare.com")) {
     state.serverUrl = savedConfig.serverUrl;
   } else if (window.location && window.location.host && !window.location.protocol.startsWith("file")) {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -622,7 +623,9 @@
     hideGateError();
     clearTimeout(reconnectTimer);
     clearTimeout(wsHandshakeTimer);
-    clearInterval(heartbeatTimer);
+    if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    clearInterval(decoyChaffTimer);
     clearInterval(httpPollTimer);
     clearInterval(wsProbeTimer);
 
@@ -967,7 +970,9 @@
     isManualDisconnect = true;
     clearTimeout(reconnectTimer);
     clearTimeout(wsHandshakeTimer);
-    clearInterval(heartbeatTimer);
+    if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    clearInterval(decoyChaffTimer);
     clearInterval(httpPollTimer);
     clearInterval(wsProbeTimer);
 

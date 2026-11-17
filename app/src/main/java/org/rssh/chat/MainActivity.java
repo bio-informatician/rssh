@@ -68,8 +68,18 @@ public class MainActivity extends Activity {
 
         // Allow mixed content for local HTTP / WS self-hosted servers
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setAllowFileAccessFromFileURLs(true);
+        settings.setAllowUniversalAccessFromFileURLs(true);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
 
-        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage consoleMessage) {
+                android.util.Log.d("ChatWebView", consoleMessage.message() + " ["
+                        + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + "]");
+                return true;
+            }
+        });
         webView.setWebViewClient(new WebViewClient());
 
         webView.addJavascriptInterface(new ChatNativeInterface(), "ChatNative");
@@ -178,7 +188,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String getAppVersion() {
-            return "1.4.0";
+            return "1.4.1";
         }
     }
 

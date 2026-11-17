@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🚀 Rakhssh Chat Server v1.4.0 - Ubuntu Auto Installer & Systemd Service Setup
+# 🚀 Rakhssh Chat Server v1.4.1 - Ubuntu Auto Installer & Systemd Service Setup
 # Self-contained, automated installer for Ubuntu 20.04 / 22.04 / 24.04 LTS.
 # Supports Android (chat.apk), iOS (PWA Web App), and Web Browsers.
 #
@@ -14,7 +14,7 @@
 set -e
 
 # Version
-INSTALLER_VERSION="1.4.0"
+INSTALLER_VERSION="1.4.1"
 
 # ANSI Color codes
 C_RESET='\033[0m'
@@ -150,7 +150,7 @@ import time
 import urllib.parse
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 # Connected WebSocket clients
 clients = set()
@@ -421,8 +421,13 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     peername = writer.get_extra_info("peername") or ("unknown", 0)
     headers = {}
     try:
-        # 1. Read HTTP request line
-        request_line = await reader.readline()
+        # 1. Read HTTP request line (with 15s timeout to avoid hanging TLS handshakes or probes)
+        try:
+            request_line = await asyncio.wait_for(reader.readline(), timeout=15.0)
+        except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError):
+            writer.close()
+            return
+
         if not request_line:
             writer.close()
             return
@@ -434,7 +439,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
         # Read headers
         while True:
-            line = await reader.readline()
+            try:
+                line = await asyncio.wait_for(reader.readline(), timeout=15.0)
+            except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError):
+                writer.close()
+                return
             if line in (b"\r\n", b"\n", b""):
                 break
             line_str = line.decode("utf-8", errors="replace").strip()
@@ -598,8 +607,6 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             }
                             apply_anti_dpi_padding(resp_dict)
                             writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
-                            await writer.drain()
-                            writer.write(make_http_json_response(200, resp_json))
                             await writer.drain()
                 else:
                     writer.write(b"HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n")
@@ -1115,7 +1122,7 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
       <div class="header-center">
         <div class="app-title">
           <span>رخش چت</span>
-          <span class="version-tag">v1.4.0</span>
+          <span class="version-tag">v1.4.1</span>
           <span id="transportBadge" class="transport-pill ws" title="روش ارتباط و انتقال داده">⚡ وب‌سوکت</span>
           <span id="antiDpiBadge" class="anti-dpi-pill active" title="سپر ضد DPI: پدینگ تصادفی و فرکانس نامنظم پکت‌ها فعال است">🛡️ ضد DPI</span>
         </div>
@@ -2214,6 +2221,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   let wsHandshakeTimer = null;
   let jitteredPingTimer = null;
   let decoyChaffTimer = null;
+  let heartbeatTimer = null;
   let reconnectTimer = null;
   let httpPollTimer = null;
   let queueRetryTimer = null;
@@ -2243,7 +2251,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   // 1. Load Saved Configuration & State
   const savedConfig = JSON.parse(localStorage.getItem("rssh_chat_auth") || "{}");
-  if (savedConfig.serverUrl) {
+  if (savedConfig.serverUrl && !savedConfig.serverUrl.includes("trycloudflare.com")) {
     state.serverUrl = savedConfig.serverUrl;
   } else if (window.location && window.location.host && !window.location.protocol.startsWith("file")) {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -2773,7 +2781,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     hideGateError();
     clearTimeout(reconnectTimer);
     clearTimeout(wsHandshakeTimer);
-    clearInterval(heartbeatTimer);
+    if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    clearInterval(decoyChaffTimer);
     clearInterval(httpPollTimer);
     clearInterval(wsProbeTimer);
 
@@ -3118,7 +3128,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     isManualDisconnect = true;
     clearTimeout(reconnectTimer);
     clearTimeout(wsHandshakeTimer);
-    clearInterval(heartbeatTimer);
+    if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    clearInterval(decoyChaffTimer);
     clearInterval(httpPollTimer);
     clearInterval(wsProbeTimer);
 
