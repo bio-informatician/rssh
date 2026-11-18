@@ -96,6 +96,62 @@ def hash_password(password: str, salt: str) -> str:
     return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
 
 
+def cleanup_empty_room(room_id: str, force: bool = False):
+    """
+    Purges room from RAM if no active WebSocket clients or recent HTTP activity remains.
+    Ensures empty rooms do not linger in memory or lock users out with stale password hashes.
+    """
+    if not room_id or room_id not in rooms:
+        return
+
+    room = rooms[room_id]
+    now = time.time()
+
+    # If any WebSocket client is actively connected, keep room
+    if room.get("clients") and len(room["clients"]) > 0:
+        return
+
+    if not force:
+        # Grace period: allow at least 10 seconds for freshly created rooms to be joined
+        if now - room.get("created_at", 0) < 10.0:
+            return
+
+        # Check if any HTTP tunnel members were active recently (within last 20 seconds)
+        http_members = room.get("http_members", {})
+        active_http = [u for u, inf in http_members.items() if (now - inf.get("last_ping", 0)) < 20.0]
+        if len(active_http) > 0:
+            return
+
+        # Check if any recent HTTP activity occurred on this room within last 20 seconds
+        if now - room.get("last_http_activity", 0) < 20.0:
+            return
+
+    rooms.pop(room_id, None)
+    print(f"🗑️ [Room Purged] Room '{room_id}' is empty (0 members) and was deleted from memory.")
+
+
+async def empty_rooms_reaper():
+    """Periodic background task to purge abandoned or empty rooms from memory."""
+    while True:
+        try:
+            await asyncio.sleep(10)
+            now = time.time()
+            for r_id in list(rooms.keys()):
+                room = rooms.get(r_id)
+                if not room:
+                    continue
+                # Purge stale HTTP members (> 20s old)
+                http_m = room.get("http_members", {})
+                stale_users = [u for u, inf in http_m.items() if (now - inf.get("last_ping", 0)) >= 20.0]
+                for su in stale_users:
+                    http_m.pop(su, None)
+
+                # Clean up if room is empty
+                cleanup_empty_room(r_id)
+        except Exception:
+            pass
+
+
 def generate_random_padding(min_bytes: int = 384, max_bytes: int = 1536) -> str:
     """Generates variable-length random noise string for Anti-DPI packet shaping."""
     length = secrets.randbelow(max(1, max_bytes - min_bytes + 1)) + min_bytes
@@ -243,6 +299,8 @@ async def broadcast_room(room_name: str, message_data, sender_writer=None):
         rooms[room_name]["clients"].discard(dc)
         clients.discard(dc)
         client_info.pop(dc, None)
+    if room_name in rooms:
+        cleanup_empty_room(room_name)
 
 
 def get_static_file(path: str):
@@ -380,6 +438,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         writer.write(make_http_json_response(400, json.dumps(resp_dict, ensure_ascii=False)))
                         await writer.drain()
                     else:
+                        now = time.time()
                         if room_id not in rooms:
                             salt = secrets.token_hex(16)
                             pw_hash = hash_password(password, salt)
@@ -387,10 +446,12 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "name": raw_room,
                                 "salt": salt,
                                 "hash": pw_hash,
-                                "created_at": time.time(),
+                                "created_at": now,
+                                "last_http_activity": now,
                                 "creator": sender,
                                 "clients": set(),
-                                "history": []
+                                "history": [],
+                                "http_members": {sender: {"last_ping": now}}
                             }
                             print(f"🔒 [HTTP Room Created] '{room_id}' by '{sender}' from {peername[0]}")
                         else:
@@ -405,6 +466,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 await writer.drain()
                                 writer.close()
                                 return
+                            rooms[room_id]["last_http_activity"] = now
+                            rooms[room_id].setdefault("http_members", {})[sender] = {"last_ping": now}
 
                         resp_dict = {
                             "status": "ok",
@@ -450,6 +513,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             await writer.drain()
                         else:
                             now = time.time()
+                            rooms[room_id]["last_http_activity"] = now
+                            rooms[room_id].setdefault("http_members", {})[sender] = {"last_ping": now}
                             msg_record = {
                                 "id": msg_id,
                                 "room": rooms[room_id].get("name", raw_room),
@@ -517,6 +582,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             await writer.drain()
                         else:
                             now = time.time()
+                            rooms[room_id]["last_http_activity"] = now
+                            rooms[room_id].setdefault("http_members", {})[sender] = {"last_ping": now}
                             for mid in msg_ids:
                                 if not mid:
                                     continue
@@ -557,6 +624,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         provided_hash = hash_password(password, salt)
                         if hmac.compare_digest(provided_hash, expected_hash):
                             now = time.time()
+                            rooms[room_id]["last_http_activity"] = now
                             http_m = rooms[room_id].setdefault("http_members", {})
                             http_m[sender] = {"last_ping": now}
                             await broadcast_room(room_id, {
@@ -606,6 +674,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
                             await writer.drain()
                         else:
+                            now = time.time()
+                            rooms[room_id]["last_http_activity"] = now
                             history = rooms[room_id].get("history", [])
                             new_msgs = [m for m in history if m.get("ts", 0) > since_ts]
                             receipts = rooms[room_id].get("receipts", [])
@@ -834,6 +904,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     old_room = client_info[writer].get("room")
                     if old_room and old_room in rooms:
                         rooms[old_room]["clients"].discard(writer)
+                        cleanup_empty_room(old_room)
 
                     # Authorize client in room
                     now = time.time()
@@ -1058,14 +1129,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         now = time.time()
                         if r in rooms:
                             rooms[r]["clients"].discard(writer)
-                            leave_msg = json.dumps({
-                                "type": "peer_offline",
-                                "room": info.get("room_display", r),
-                                "user": s,
-                                "text": f"«{s}» از اتاق خارج شد.",
-                                "ts": now
-                            }, ensure_ascii=False)
-                            await broadcast_room(r, leave_msg)
+                            if rooms[r]["clients"]:
+                                leave_msg = json.dumps({
+                                    "type": "peer_offline",
+                                    "room": info.get("room_display", r),
+                                    "user": s,
+                                    "text": f"«{s}» از اتاق خارج شد.",
+                                    "ts": now
+                                }, ensure_ascii=False)
+                                await broadcast_room(r, leave_msg)
+                            else:
+                                cleanup_empty_room(r, force=True)
                         info["room"] = None
                         info["authenticated"] = False
                     continue
@@ -1089,6 +1163,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         "ts": time.time()
                     }, ensure_ascii=False)
                     asyncio.create_task(broadcast_room(r, leave_msg))
+                else:
+                    cleanup_empty_room(r, force=True)
 
         try:
             writer.close()
@@ -1139,8 +1215,11 @@ async def main():
     server = await asyncio.start_server(handle_client, host, port)
     local_ips = get_local_ips()
 
+    # Launch background empty room reaper
+    asyncio.create_task(empty_rooms_reaper())
+
     print("=" * 65)
-    print("      🚀 Rakhssh Secure WebSocket & Web Chat Server v1.3.0")
+    print("      🚀 Rakhssh Secure WebSocket & Web Chat Server v1.5.0")
     print("=" * 65)
     print(f"Server is listening on {host}:{port}")
     print("\n👉 Protocols & Endpoints Active:")
