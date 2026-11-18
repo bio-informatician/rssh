@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🚀 Rakhssh Chat Server v1.4.1 - Ubuntu Auto Installer & Systemd Service Setup
+# 🚀 Rakhssh Chat Server v1.5.0 - Ubuntu Auto Installer & Systemd Service Setup
 # Self-contained, automated installer for Ubuntu 20.04 / 22.04 / 24.04 LTS.
 # Supports Android (chat.apk), iOS (PWA Web App), and Web Browsers.
 #
@@ -14,7 +14,7 @@
 set -e
 
 # Version
-INSTALLER_VERSION="1.4.1"
+INSTALLER_VERSION="1.5.0"
 
 # ANSI Color codes
 C_RESET='\033[0m'
@@ -150,7 +150,7 @@ import time
 import urllib.parse
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 
 # Connected WebSocket clients
 clients = set()
@@ -575,6 +575,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "sender": sender,
                                 "ciphertext": ciphertext,
                                 "encrypted": encrypted,
+                                "status": "sent",
                                 "time": time_str,
                                 "ts": now
                             }
@@ -595,6 +596,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "sender": sender,
                                 "ciphertext": ciphertext,
                                 "encrypted": encrypted,
+                                "status": "sent",
                                 "time": time_str,
                                 "ts": now
                             }
@@ -608,6 +610,86 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             apply_anti_dpi_padding(resp_dict)
                             writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
                             await writer.drain()
+
+                # REST API 2.5: /api/receipt (Delivery & Seen Receipts via HTTP)
+                elif path == "/api/receipt":
+                    raw_room = str(payload.get("room") or "").strip()
+                    password = str(payload.get("password") or "").strip()
+                    sender = str(payload.get("sender") or "").strip() or "کاربر"
+                    receipt_type = str(payload.get("type") or "delivered")  # delivered or seen
+                    msg_ids = payload.get("msgIds") or ([payload.get("msgId")] if payload.get("msgId") else [])
+
+                    room_id = raw_room.lower()
+                    if not raw_room or not password or room_id not in rooms:
+                        resp_dict = {"status": "error", "text": "اتاق یافت نشد یا دسترسی غیرمجاز."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                    else:
+                        salt = rooms[room_id]["salt"]
+                        expected_hash = rooms[room_id]["hash"]
+                        provided_hash = hash_password(password, salt)
+                        if not hmac.compare_digest(provided_hash, expected_hash):
+                            resp_dict = {"status": "error", "text": "رمز عبور نادرست است."}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
+                            await writer.drain()
+                        else:
+                            now = time.time()
+                            for mid in msg_ids:
+                                if not mid:
+                                    continue
+                                history = rooms[room_id].get("history", [])
+                                for h in history:
+                                    if h.get("id") == mid:
+                                        if receipt_type == "seen" or h.get("status") != "seen":
+                                            h["status"] = receipt_type
+                                        break
+                                receipts = rooms[room_id].setdefault("receipts", [])
+                                receipts.append({"msgId": mid, "status": receipt_type, "by": sender, "ts": now})
+                                if len(receipts) > 100:
+                                    receipts.pop(0)
+
+                                status_update = {
+                                    "type": "msg_status",
+                                    "msgId": mid,
+                                    "status": receipt_type,
+                                    "by": sender,
+                                    "ts": now
+                                }
+                                await broadcast_room(room_id, status_update)
+
+                            resp_dict = {"status": "ok", "updated": len(msg_ids)}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                            await writer.drain()
+
+                # REST API 2.6: /api/peer_ping (HTTP client ping for peer presence)
+                elif path == "/api/peer_ping":
+                    raw_room = str(payload.get("room") or "").strip()
+                    password = str(payload.get("password") or "").strip()
+                    sender = str(payload.get("sender") or "").strip() or "کاربر"
+                    room_id = raw_room.lower()
+                    if room_id in rooms:
+                        salt = rooms[room_id]["salt"]
+                        expected_hash = rooms[room_id]["hash"]
+                        provided_hash = hash_password(password, salt)
+                        if hmac.compare_digest(provided_hash, expected_hash):
+                            now = time.time()
+                            http_m = rooms[room_id].setdefault("http_members", {})
+                            http_m[sender] = {"last_ping": now}
+                            await broadcast_room(room_id, {
+                                "type": "peer_ping",
+                                "room": raw_room,
+                                "user": sender,
+                                "ts": now
+                            })
+                            resp_dict = {"status": "ok", "ts": now}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                            await writer.drain()
+                            writer.close()
+                            return
                 else:
                     writer.write(b"HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n")
                     await writer.drain()
@@ -645,11 +727,36 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         else:
                             history = rooms[room_id].get("history", [])
                             new_msgs = [m for m in history if m.get("ts", 0) > since_ts]
+                            receipts = rooms[room_id].get("receipts", [])
+                            new_receipts = [r for r in receipts if r.get("ts", 0) > since_ts]
+
+                            now = time.time()
+                            active_members = []
+                            for w in rooms[room_id]["clients"]:
+                                winf = client_info.get(w)
+                                if winf and winf.get("authenticated") and winf.get("nickname"):
+                                    lp = winf.get("last_ping", now)
+                                    active_members.append({
+                                        "user": winf["nickname"],
+                                        "last_ping": lp,
+                                        "online": (now - lp) <= 2.0
+                                    })
+                            for u, uinf in rooms[room_id].get("http_members", {}).items():
+                                lp = uinf.get("last_ping", 0)
+                                if not any(m["user"] == u for m in active_members):
+                                    active_members.append({
+                                        "user": u,
+                                        "last_ping": lp,
+                                        "online": (now - lp) <= 2.0
+                                    })
+
                             resp_dict = {
                                 "status": "ok",
                                 "room": raw_room,
                                 "messages": new_msgs,
-                                "server_time": time.time()
+                                "receipts": new_receipts,
+                                "members": active_members,
+                                "server_time": now
                             }
                             apply_anti_dpi_padding(resp_dict)
                             writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
@@ -848,6 +955,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         rooms[old_room]["clients"].discard(writer)
 
                     # Authorize client in room
+                    now = time.time()
                     rooms[room_id]["clients"].add(writer)
                     client_info[writer] = {
                         "peer": peername,
@@ -855,14 +963,28 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         "room_display": raw_room,
                         "nickname": sender,
                         "authenticated": True,
+                        "last_ping": now,
                     }
 
                     print(f"🔑 [WS Auth Success] '{sender}' joined room '{room_id}' (Members: {len(rooms[room_id]['clients'])})")
+
+                    # Compile existing authenticated room members and their status
+                    members = []
+                    for w in rooms[room_id]["clients"]:
+                        winf = client_info.get(w)
+                        if winf and winf.get("authenticated") and winf.get("nickname"):
+                            lp = winf.get("last_ping", now)
+                            members.append({
+                                "user": winf["nickname"],
+                                "last_ping": lp,
+                                "online": (now - lp) <= 2.0
+                            })
 
                     success_resp = {
                         "type": "auth_success",
                         "room": raw_room,
                         "sender": sender,
+                        "members": members,
                         "text": f"با موفقیت به اتاق امن «{raw_room}» متصل شدید."
                     }
                     apply_anti_dpi_padding(success_resp)
@@ -883,11 +1005,95 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                     # Notify other members of this room ONLY
                     join_announce = json.dumps({
-                        "type": "system",
+                        "type": "peer_join",
                         "room": raw_room,
-                        "text": f"«{sender}» وارد اتاق شد."
+                        "user": sender,
+                        "text": f"«{sender}» وارد اتاق شد.",
+                        "ts": now
                     }, ensure_ascii=False)
                     await broadcast_room(room_id, join_announce, sender_writer=writer)
+                    continue
+
+                # Peer Ping Heartbeat (Live peer presence & 2s ping indicator)
+                if msg_type == "peer_ping":
+                    info = client_info.get(writer)
+                    if info and info.get("authenticated") and info.get("room"):
+                        current_room = info["room"]
+                        sender = info.get("nickname") or payload.get("user") or "کاربر"
+                        now = time.time()
+                        info["last_ping"] = now
+                        peer_ping_msg = json.dumps({
+                            "type": "peer_ping",
+                            "room": info.get("room_display", current_room),
+                            "user": sender,
+                            "ts": now
+                        }, ensure_ascii=False)
+                        await broadcast_room(current_room, peer_ping_msg, sender_writer=writer)
+                    continue
+
+                # Message Delivered Receipt (2 ticks: ✓✓)
+                if msg_type == "msg_delivered":
+                    info = client_info.get(writer)
+                    if info and info.get("authenticated") and info.get("room"):
+                        current_room = info["room"]
+                        sender = info.get("nickname") or "کاربر"
+                        msg_id = payload.get("msgId")
+                        msg_ids = payload.get("msgIds") or ([msg_id] if msg_id else [])
+                        now = time.time()
+                        for mid in msg_ids:
+                            if not mid:
+                                continue
+                            history = rooms.get(current_room, {}).get("history", [])
+                            for h in history:
+                                if h.get("id") == mid:
+                                    if h.get("status") != "seen":
+                                        h["status"] = "delivered"
+                                    break
+                            receipts = rooms[current_room].setdefault("receipts", [])
+                            receipts.append({"msgId": mid, "status": "delivered", "by": sender, "ts": now})
+                            if len(receipts) > 100:
+                                receipts.pop(0)
+
+                            status_update = json.dumps({
+                                "type": "msg_status",
+                                "msgId": mid,
+                                "status": "delivered",
+                                "by": sender,
+                                "ts": now
+                            }, ensure_ascii=False)
+                            await broadcast_room(current_room, status_update, sender_writer=writer)
+                    continue
+
+                # Message Seen Receipt (2 ticks become circle: ◯)
+                if msg_type == "msg_seen":
+                    info = client_info.get(writer)
+                    if info and info.get("authenticated") and info.get("room"):
+                        current_room = info["room"]
+                        sender = info.get("nickname") or "کاربر"
+                        msg_id = payload.get("msgId")
+                        msg_ids = payload.get("msgIds") or ([msg_id] if msg_id else [])
+                        now = time.time()
+                        for mid in msg_ids:
+                            if not mid:
+                                continue
+                            history = rooms.get(current_room, {}).get("history", [])
+                            for h in history:
+                                if h.get("id") == mid:
+                                    h["status"] = "seen"
+                                    break
+                            receipts = rooms[current_room].setdefault("receipts", [])
+                            receipts.append({"msgId": mid, "status": "seen", "by": sender, "ts": now})
+                            if len(receipts) > 100:
+                                receipts.pop(0)
+
+                            status_update = json.dumps({
+                                "type": "msg_status",
+                                "msgId": mid,
+                                "status": "seen",
+                                "by": sender,
+                                "ts": now
+                            }, ensure_ascii=False)
+                            await broadcast_room(current_room, status_update, sender_writer=writer)
                     continue
 
                 # Room Chat message
@@ -920,6 +1126,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         "sender": sender,
                         "ciphertext": ciphertext,
                         "encrypted": encrypted,
+                        "status": "sent",
                         "time": time_str,
                         "ts": now
                     }
@@ -942,6 +1149,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         "sender": sender,
                         "ciphertext": ciphertext,
                         "encrypted": encrypted,
+                        "status": "sent",
                         "time": time_str,
                         "ts": now
                     }, ensure_ascii=False)
@@ -966,12 +1174,15 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     if info and info.get("room"):
                         r = info["room"]
                         s = info.get("nickname", "کاربر")
+                        now = time.time()
                         if r in rooms:
                             rooms[r]["clients"].discard(writer)
                             leave_msg = json.dumps({
-                                "type": "system",
+                                "type": "peer_offline",
                                 "room": info.get("room_display", r),
-                                "text": f"«{s}» از اتاق خارج شد."
+                                "user": s,
+                                "text": f"«{s}» از اتاق خارج شد.",
+                                "ts": now
                             }, ensure_ascii=False)
                             await broadcast_room(r, leave_msg)
                         info["room"] = None
@@ -990,9 +1201,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 rooms[r]["clients"].discard(writer)
                 if rooms[r]["clients"]:
                     leave_msg = json.dumps({
-                        "type": "system",
+                        "type": "peer_offline",
                         "room": info.get("room_display", r),
-                        "text": f"«{s}» از گفتگو خارج شد."
+                        "user": s,
+                        "text": f"«{s}» از گفتگو خارج شد.",
+                        "ts": time.time()
                     }, ensure_ascii=False)
                     asyncio.create_task(broadcast_room(r, leave_msg))
 
@@ -1122,13 +1335,14 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
       <div class="header-center">
         <div class="app-title">
           <span>رخش چت</span>
-          <span class="version-tag">v1.4.1</span>
+          <span class="version-tag">v1.5.0</span>
           <span id="transportBadge" class="transport-pill ws" title="روش ارتباط و انتقال داده">⚡ وب‌سوکت</span>
           <span id="antiDpiBadge" class="anti-dpi-pill active" title="سپر ضد DPI: پدینگ تصادفی و فرکانس نامنظم پکت‌ها فعال است">🛡️ ضد DPI</span>
         </div>
         <div class="connection-status">
           <span id="statusIndicator" class="status-dot disconnected"></span>
           <span id="statusText">در انتظار اتصال</span>
+          <button id="btnCancelReconnectHeader" class="btn-cancel-reconnect-header hidden" type="button" title="توقف تلاش برای اتصال">⏹ توقف تلاش</button>
           <span id="roomStatusBadge" class="room-pill hidden">🔒 <span id="currentRoomDisplay"></span></span>
         </div>
       </div>
@@ -1149,6 +1363,17 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
       </div>
     </header>
 
+    <!-- Reconnect Control Banner -->
+    <div id="reconnectBanner" class="reconnect-banner hidden">
+      <div class="reconnect-info">
+        <span class="reconnect-icon spinning">🔄</span>
+        <span id="reconnectBannerText">در حال تلاش برای اتصال مجدد...</span>
+      </div>
+      <button type="button" id="btnToggleReconnect" class="btn-banner-action">
+        ⏹ توقف تلاش مجدد
+      </button>
+    </div>
+
     <!-- Room Gate: Shown when user is not inside an authorized room -->
     <div id="roomGate" class="gate-container">
       <div class="gate-card">
@@ -1166,6 +1391,7 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
 
         <div id="gateError" class="alert-box danger hidden">
           <span id="gateErrorText">رمز عبور اتاق نادرست است!</span>
+          <button type="button" id="btnStopGateRetry" class="btn-gate-stop-retry hidden">⏹ توقف تلاش مجدد</button>
         </div>
 
         <form id="gateForm" class="gate-form">
@@ -1245,6 +1471,19 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
       <div id="notifBanner" class="notif-banner hidden">
         <span>🔔 برای دریافت پیام‌ها روی صفحه قفل و در پس‌زمینه، دسترسی اعلان را تایید کنید.</span>
         <button id="btnEnableNotif" class="btn-banner">فعال‌سازی</button>
+      </div>
+
+      <!-- Room Active Members & Ping Status Bar -->
+      <div id="roomMembersBar" class="room-members-bar">
+        <div class="members-bar-inner">
+          <span class="members-title">
+            <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+            اعضای اتاق:
+          </span>
+          <div id="membersList" class="members-chips-container">
+            <!-- Dynamically populated member chips -->
+          </div>
+        </div>
       </div>
 
       <!-- Chat Messages Scroll View -->
@@ -1342,6 +1581,13 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
             <label>
               <input type="checkbox" id="autoReconnect" checked />
               اتصال مجدد خودکار در صورت قطع شدن شبکه
+            </label>
+          </div>
+
+          <div class="form-group checkbox-group">
+            <label>
+              <input type="checkbox" id="vibrationToggle" checked />
+              ویبره هنگام پیام‌های جدید (خطای اتصال هرگز ویبره نمی‌زند)
             </label>
           </div>
 
@@ -1536,10 +1782,66 @@ body {
   vertical-align: middle;
 }
 
+.msg-status {
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 .msg-status.pending {
   color: #f59e0b;
   font-size: 11px;
   animation: pulse-spin 1.5s infinite;
+}
+
+.msg-status.sent {
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 11px;
+}
+
+.msg-status.delivered {
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -2px;
+}
+
+.msg-status.seen {
+  color: #38bdf8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-circle-svg {
+  width: 11px;
+  height: 11px;
+  stroke: #38bdf8;
+  fill: none;
+  stroke-width: 2.2;
+  filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.8));
+}
+
+.peer-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 5px;
+  vertical-align: middle;
+  transition: background-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.peer-status-dot.online {
+  background-color: #22c55e;
+  box-shadow: 0 0 6px #22c55e;
+}
+
+.peer-status-dot.offline {
+  background-color: #ef4444;
+  box-shadow: 0 0 6px #ef4444;
 }
 
 @keyframes pulse-spin {
@@ -2149,6 +2451,186 @@ body {
   direction: rtl;
 }
 
+/* ==========================================================================
+   v1.5.0 Reconnection Controls & Room Members Bar
+   ========================================================================== */
+.btn-cancel-reconnect-header {
+  background: rgba(239, 68, 68, 0.25);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  cursor: pointer;
+  margin-right: 6px;
+  transition: all 0.2s;
+  line-height: 1.4;
+}
+
+.btn-cancel-reconnect-header:hover, .btn-cancel-reconnect-header:active {
+  background: rgba(239, 68, 68, 0.45);
+}
+
+.btn-cancel-reconnect-header.resume {
+  background: rgba(34, 197, 94, 0.25);
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #86efac;
+}
+
+.reconnect-banner {
+  background: rgba(239, 68, 68, 0.16);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  animation: slide-down 0.25s ease-out;
+  z-index: 10;
+}
+
+.reconnect-banner.paused {
+  background: rgba(245, 158, 11, 0.16);
+  border-bottom-color: rgba(245, 158, 11, 0.35);
+  color: #fcd34d;
+}
+
+.reconnect-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.reconnect-icon {
+  display: inline-block;
+  font-size: 13px;
+}
+
+.reconnect-icon.spinning {
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes slide-down {
+  from { transform: translateY(-100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.btn-banner-action {
+  background: rgba(239, 68, 68, 0.3);
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  color: #fee2e2;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.btn-banner-action:hover, .btn-banner-action:active {
+  background: rgba(239, 68, 68, 0.55);
+}
+
+.btn-banner-action.resume {
+  background: rgba(34, 197, 94, 0.25);
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #86efac;
+}
+
+.btn-gate-stop-retry {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  background: rgba(239, 68, 68, 0.25);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: #fee2e2;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-gate-stop-retry:hover, .btn-gate-stop-retry:active {
+  background: rgba(239, 68, 68, 0.45);
+}
+
+.btn-gate-stop-retry.resume {
+  background: rgba(34, 197, 94, 0.25);
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #86efac;
+}
+
+/* Room Members Bar */
+.room-members-bar {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.15);
+  padding: 6px 14px;
+  font-size: 11px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.members-bar-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.members-bar-inner::-webkit-scrollbar {
+  display: none;
+}
+
+.members-title {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.members-chips-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 2px 8px;
+  border-radius: 9999px;
+  color: var(--text-main);
+  font-size: 11px;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.member-chip.me {
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.08);
+}
+
 .hidden {
   display: none !important;
 }
@@ -2178,6 +2660,12 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const btnLeaveRoom = document.getElementById("btnLeaveRoom");
   const btnNotification = document.getElementById("btnNotification");
   const btnClear = document.getElementById("btnClear");
+  const btnCancelReconnectHeader = document.getElementById("btnCancelReconnectHeader");
+
+  // DOM Elements - Reconnect Banner
+  const reconnectBanner = document.getElementById("reconnectBanner");
+  const reconnectBannerText = document.getElementById("reconnectBannerText");
+  const btnToggleReconnect = document.getElementById("btnToggleReconnect");
 
   // DOM Elements - Room Gate
   const roomGate = document.getElementById("roomGate");
@@ -2188,6 +2676,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const btnTogglePassword = document.getElementById("btnTogglePassword");
   const gateError = document.getElementById("gateError");
   const gateErrorText = document.getElementById("gateErrorText");
+  const btnStopGateRetry = document.getElementById("btnStopGateRetry");
   const btnToggleAdvanced = document.getElementById("btnToggleAdvanced");
   const advancedServerBlock = document.getElementById("advancedServerBlock");
   const serverUrlInput = document.getElementById("serverUrl");
@@ -2197,6 +2686,8 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const chatView = document.getElementById("chatView");
   const notifBanner = document.getElementById("notifBanner");
   const btnEnableNotif = document.getElementById("btnEnableNotif");
+  const roomMembersBar = document.getElementById("roomMembersBar");
+  const membersList = document.getElementById("membersList");
   const chatMessages = document.getElementById("chatMessages");
   const chatForm = document.getElementById("chatForm");
   const messageInput = document.getElementById("messageInput");
@@ -2211,6 +2702,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const btnPresetDirect = document.getElementById("btnPresetDirect");
   const btnPresetCfTunnel = document.getElementById("btnPresetCfTunnel");
   const autoReconnectInput = document.getElementById("autoReconnect");
+  const vibrationToggle = document.getElementById("vibrationToggle");
   const keepCredentialsInput = document.getElementById("keepCredentials");
   const btnTestNotif = document.getElementById("btnTestNotif");
   const btnMinimizeApp = document.getElementById("btnMinimizeApp");
@@ -2228,8 +2720,17 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   let wsProbeTimer = null;
   let isConnecting = false;
   let isManualDisconnect = false;
+  let isReconnectStopped = false;
   let unreadCount = 0;
   const originalTitle = document.title;
+
+  // Peer presence & freshness tracking (2-second ping indicator)
+  const peers = new Map(); // username -> { lastPing: timestamp, isOnline: boolean }
+  let peerPingInterval = null;
+  let peerFreshnessChecker = null;
+
+  // Unseen messages queue for read receipts (turning 2 ticks into circle)
+  const unseenMessageIds = new Set();
 
   const state = {
     nickname: "کاربر",
@@ -2240,6 +2741,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     antiDpi: true,
     decoyChaff: true,
     autoReconnect: true,
+    vibrationEnabled: true,
     keepCredentials: true,
     isAuthenticated: false,
     transportMode: "ws", // "ws" | "http"
@@ -2267,6 +2769,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   if (savedConfig.antiDpi !== undefined) state.antiDpi = savedConfig.antiDpi;
   if (savedConfig.decoyChaff !== undefined) state.decoyChaff = savedConfig.decoyChaff;
   if (savedConfig.autoReconnect !== undefined) state.autoReconnect = savedConfig.autoReconnect;
+  if (savedConfig.vibrationEnabled !== undefined) state.vibrationEnabled = savedConfig.vibrationEnabled;
   if (savedConfig.keepCredentials !== undefined) state.keepCredentials = savedConfig.keepCredentials;
 
   // Initialize Form Values
@@ -2278,8 +2781,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
   if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
   if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
-  autoReconnectInput.checked = state.autoReconnect;
-  keepCredentialsInput.checked = state.keepCredentials;
+  if (autoReconnectInput) autoReconnectInput.checked = state.autoReconnect;
+  if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
+  if (keepCredentialsInput) keepCredentialsInput.checked = state.keepCredentials;
 
   // Save Settings Helper
   function persistSettings() {
@@ -2290,6 +2794,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       decoyChaff: state.decoyChaff,
       nickname: state.nickname,
       autoReconnect: state.autoReconnect,
+      vibrationEnabled: state.vibrationEnabled,
       keepCredentials: state.keepCredentials,
       room: state.keepCredentials ? state.room : "",
       password: state.keepCredentials ? state.password : "",
@@ -2464,10 +2969,13 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   }
 
   function nativeVibrate(ms = 40) {
+    if (!state.vibrationEnabled) return;
     if (window.ChatNative && window.ChatNative.vibrate) {
       window.ChatNative.vibrate(ms);
     } else if (navigator.vibrate) {
-      navigator.vibrate(ms);
+      try {
+        navigator.vibrate(ms);
+      } catch (e) {}
     }
   }
 
@@ -2526,16 +3034,18 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     } catch (e) {}
   }
 
-  // Clear unread count when window gains focus
+  // Clear unread count & send read receipts when window gains focus or becomes visible
   window.addEventListener("focus", () => {
     unreadCount = 0;
     document.title = originalTitle;
+    flushUnseenReceipts();
   });
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       unreadCount = 0;
       document.title = originalTitle;
+      flushUnseenReceipts();
     }
   });
 
@@ -2563,11 +3073,315 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   function showGateError(msg) {
     gateErrorText.textContent = msg;
     gateError.classList.remove("hidden");
-    nativeVibrate(150);
+    // Vibration intentionally removed on connection / gate errors per user preference
   }
 
   function hideGateError() {
     gateError.classList.add("hidden");
+  }
+
+  // ==========================================================================
+  // Reconnection Controls (One-click cancel / resume retry)
+  // ==========================================================================
+  function showReconnectBanner(show, text = "", isPaused = false) {
+    if (!reconnectBanner) return;
+    if (show) {
+      reconnectBanner.classList.remove("hidden");
+      if (btnCancelReconnectHeader) btnCancelReconnectHeader.classList.remove("hidden");
+      if (btnStopGateRetry) btnStopGateRetry.classList.remove("hidden");
+
+      if (reconnectBannerText) reconnectBannerText.textContent = text;
+      const spinIcon = reconnectBanner.querySelector(".reconnect-icon");
+
+      if (isPaused) {
+        reconnectBanner.classList.add("paused");
+        if (spinIcon) spinIcon.classList.remove("spinning");
+        if (btnToggleReconnect) {
+          btnToggleReconnect.textContent = "▶ تلاش مجدد";
+          btnToggleReconnect.className = "btn-banner-action resume";
+        }
+        if (btnCancelReconnectHeader) {
+          btnCancelReconnectHeader.textContent = "▶ اتصال";
+          btnCancelReconnectHeader.className = "btn-cancel-reconnect-header resume";
+        }
+        if (btnStopGateRetry) {
+          btnStopGateRetry.textContent = "▶ تلاش مجدد برای اتصال";
+          btnStopGateRetry.className = "btn-gate-stop-retry resume";
+        }
+      } else {
+        reconnectBanner.classList.remove("paused");
+        if (spinIcon) spinIcon.classList.add("spinning");
+        if (btnToggleReconnect) {
+          btnToggleReconnect.textContent = "⏹ توقف تلاش";
+          btnToggleReconnect.className = "btn-banner-action";
+        }
+        if (btnCancelReconnectHeader) {
+          btnCancelReconnectHeader.textContent = "⏹ توقف تلاش";
+          btnCancelReconnectHeader.className = "btn-cancel-reconnect-header";
+        }
+        if (btnStopGateRetry) {
+          btnStopGateRetry.textContent = "⏹ توقف تلاش مجدد";
+          btnStopGateRetry.className = "btn-gate-stop-retry";
+        }
+      }
+    } else {
+      reconnectBanner.classList.add("hidden");
+      if (btnCancelReconnectHeader) btnCancelReconnectHeader.classList.add("hidden");
+      if (btnStopGateRetry) btnStopGateRetry.classList.add("hidden");
+    }
+  }
+
+  function stopReconnect() {
+    isReconnectStopped = true;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    updateStatus("disconnected", "تلاش مجدد متوقف شد");
+    showReconnectBanner(true, "تلاش برای اتصال متوقف شد", true);
+  }
+
+  function resumeReconnect() {
+    isReconnectStopped = false;
+    showReconnectBanner(true, "در حال اتصال به سرور...", false);
+    if (state.room && state.password) {
+      connectAndJoinRoom(state.room, state.password, state.nickname);
+    }
+  }
+
+  if (btnToggleReconnect) {
+    btnToggleReconnect.addEventListener("click", () => {
+      if (isReconnectStopped) resumeReconnect();
+      else stopReconnect();
+    });
+  }
+
+  if (btnCancelReconnectHeader) {
+    btnCancelReconnectHeader.addEventListener("click", () => {
+      if (isReconnectStopped) resumeReconnect();
+      else stopReconnect();
+    });
+  }
+
+  if (btnStopGateRetry) {
+    btnStopGateRetry.addEventListener("click", () => {
+      if (isReconnectStopped) resumeReconnect();
+      else stopReconnect();
+    });
+  }
+
+  // ==========================================================================
+  // Peer Presence & 2-Second Ping Indicator
+  // ==========================================================================
+  function cssEscape(str) {
+    return encodeURIComponent(str).replace(/%/g, "_");
+  }
+
+  function renderRoomMembers() {
+    if (!membersList) return;
+    membersList.innerHTML = "";
+
+    // 1. Current user chip (always online when authenticated)
+    const myChip = document.createElement("span");
+    myChip.className = "member-chip me";
+    myChip.innerHTML = `<span class="peer-status-dot online"></span> <span>${escapeHtml(state.nickname)} (شما)</span>`;
+    membersList.appendChild(myChip);
+
+    // 2. Peer chips with colored status light
+    peers.forEach((data, user) => {
+      if (user === state.nickname) return;
+      const chip = document.createElement("span");
+      chip.className = "member-chip";
+      chip.id = `chip-${cssEscape(user)}`;
+      const dotClass = data.isOnline ? "online" : "offline";
+      const title = data.isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+      chip.title = `${user}: ${title}`;
+      chip.innerHTML = `<span class="peer-status-dot ${dotClass}" title="${title}"></span> <span>${escapeHtml(user)}</span>`;
+      membersList.appendChild(chip);
+    });
+  }
+
+  function updatePeerStatusIndicators(user, isOnline) {
+    const dotClass = isOnline ? "online" : "offline";
+    const title = isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+
+    // Update chip in top members bar
+    const chip = document.getElementById(`chip-${cssEscape(user)}`);
+    if (chip) {
+      chip.title = `${user}: ${title}`;
+      const dot = chip.querySelector(".peer-status-dot");
+      if (dot) {
+        dot.className = `peer-status-dot ${dotClass}`;
+        dot.title = title;
+      }
+    }
+
+    // Update status dot beside sender nickname in chat bubbles
+    const dots = document.querySelectorAll(`.peer-status-dot[data-peer="${user}"]`);
+    dots.forEach((dot) => {
+      dot.className = `peer-status-dot ${dotClass}`;
+      dot.title = title;
+    });
+  }
+
+  function initPeerPresence() {
+    if (peerPingInterval) clearInterval(peerPingInterval);
+    if (peerFreshnessChecker) clearInterval(peerFreshnessChecker);
+
+    // 1. Ping Sender: Send heartbeat ping every 1000ms
+    peerPingInterval = setInterval(() => {
+      if (!state.isAuthenticated) return;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(wrapAntiDpi({
+            type: "peer_ping",
+            room: state.room,
+            user: state.nickname,
+          })));
+        } catch (e) {}
+      } else if (state.transportMode === "http") {
+        sendHttpPeerPing();
+      }
+    }, 1000);
+
+    // 2. Freshness Checker: every 400ms, if now - lastPing > 2000ms -> offline (RED LIGHT)!
+    peerFreshnessChecker = setInterval(() => {
+      if (!state.isAuthenticated) return;
+      const now = Date.now();
+      peers.forEach((data, user) => {
+        if (user === state.nickname) return;
+        const diff = now - (data.lastPing || 0);
+        const isOnline = diff <= 2000; // 2 seconds limit!
+        if (data.isOnline !== isOnline) {
+          data.isOnline = isOnline;
+          updatePeerStatusIndicators(user, isOnline);
+        }
+      });
+    }, 400);
+  }
+
+  async function sendHttpPeerPing() {
+    try {
+      const httpBase = getHttpBaseUrl(state.serverUrl);
+      await fetch(`${httpBase}/api/peer_ping`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wrapAntiDpi({
+          room: state.room,
+          password: state.password,
+          sender: state.nickname,
+        })),
+      });
+    } catch (e) {}
+  }
+
+  // ==========================================================================
+  // Message Status Receipts (✓ Sent -> ✓✓ Delivered -> ◯ Seen Circle)
+  // ==========================================================================
+  function isChatVisible() {
+    if (document.hidden) return false;
+    if (!document.hasFocus()) return false;
+    if (window.ChatNative && window.ChatNative.isAppForeground && !window.ChatNative.isAppForeground()) {
+      return false;
+    }
+    return !chatView.classList.contains("hidden");
+  }
+
+  function renderStatusIcon(status = "sent") {
+    if (status === "pending") {
+      return '<span class="msg-status pending" title="در حال ارسال / صف تحویل...">⏳</span>';
+    }
+    if (status === "delivered") {
+      return '<span class="msg-status delivered" title="تحویل داده شد (رسید به دستش)">✓✓</span>';
+    }
+    if (status === "seen") {
+      return '<span class="msg-status seen" title="مشاهده شد (صفحه چت دیده شد)"><svg class="status-circle-svg" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5"></circle></svg></span>';
+    }
+    return '<span class="msg-status sent" title="ارسال شد به سرور">✓</span>';
+  }
+
+  function updateMessageStatus(msgId, status) {
+    const el = document.getElementById(`msg-${msgId}`);
+    if (!el) return;
+    const statusElem = el.querySelector(".msg-status");
+    if (!statusElem) return;
+
+    if (status === "pending") {
+      statusElem.className = "msg-status pending";
+      statusElem.textContent = "⏳";
+      statusElem.title = "در حال ارسال / صف تحویل...";
+    } else if (status === "sent") {
+      if (statusElem.classList.contains("delivered") || statusElem.classList.contains("seen")) return;
+      statusElem.className = "msg-status sent";
+      statusElem.textContent = "✓";
+      statusElem.title = "ارسال شد به سرور";
+    } else if (status === "delivered") {
+      if (statusElem.classList.contains("seen")) return;
+      statusElem.className = "msg-status delivered";
+      statusElem.textContent = "✓✓";
+      statusElem.title = "تحویل داده شد (رسید به دستش)";
+    } else if (status === "seen") {
+      statusElem.className = "msg-status seen";
+      statusElem.innerHTML = '<svg class="status-circle-svg" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5"></circle></svg>';
+      statusElem.title = "مشاهده شد (صفحه چت دیده شد)";
+    }
+  }
+
+  function sendDeliveryReceipt(msgId) {
+    if (!msgId || !state.room) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(wrapAntiDpi({
+          type: "msg_delivered",
+          msgId: msgId,
+          room: state.room,
+        })));
+      } catch (e) {}
+    } else if (state.transportMode === "http") {
+      sendHttpReceipt("delivered", [msgId]);
+    }
+  }
+
+  function sendSeenReceipt(msgIdOrIds) {
+    if (!state.room) return;
+    const ids = Array.isArray(msgIdOrIds) ? msgIdOrIds : [msgIdOrIds];
+    if (ids.length === 0) return;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(wrapAntiDpi({
+          type: "msg_seen",
+          msgIds: ids,
+          room: state.room,
+        })));
+      } catch (e) {}
+    } else if (state.transportMode === "http") {
+      sendHttpReceipt("seen", ids);
+    }
+  }
+
+  async function sendHttpReceipt(receiptType, msgIds) {
+    try {
+      const httpBase = getHttpBaseUrl(state.serverUrl);
+      await fetch(`${httpBase}/api/receipt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wrapAntiDpi({
+          room: state.room,
+          password: state.password,
+          sender: state.nickname,
+          type: receiptType,
+          msgIds: msgIds,
+        })),
+      });
+    } catch (e) {}
+  }
+
+  function flushUnseenReceipts() {
+    if (!state.isAuthenticated || unseenMessageIds.size === 0) return;
+    if (!isChatVisible()) return;
+
+    const idsToSend = Array.from(unseenMessageIds);
+    unseenMessageIds.clear();
+    sendSeenReceipt(idsToSend);
   }
 
   function formatTime(date = new Date()) {
@@ -2586,17 +3400,13 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       .replace(/'/g, "&#039;");
   }
 
-  function appendMessage({ type = "peer", sender = "", text = "", time = "", id = "", isEncrypted = true, isPending = false }) {
+  function appendMessage({ type = "peer", sender = "", text = "", time = "", id = "", isEncrypted = true, isPending = false, status = "sent" }) {
     // If element with this id already exists in DOM, update status if needed
     if (id) {
       const existing = document.getElementById(`msg-${id}`);
       if (existing) {
         if (!isPending) {
-          const statusElem = existing.querySelector(".msg-status");
-          if (statusElem) {
-            statusElem.className = "msg-status";
-            statusElem.textContent = "✓";
-          }
+          updateMessageStatus(id, status);
         }
         return;
       }
@@ -2616,11 +3426,22 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       const isMe = type === "me";
       const timeStr = time || formatTime();
       const lockIcon = isEncrypted ? '<span class="msg-lock" title="رمزنگاری سرتاسری AES-256">🔒</span>' : "";
-      const statusIcon = isMe ? (isPending ? '<span class="msg-status pending" title="در حال ارسال / صف تحویل...">⏳</span>' : '<span class="msg-status">✓</span>') : "";
+      const initialStatus = isPending ? "pending" : (status || "sent");
+      const statusIcon = isMe ? renderStatusIcon(initialStatus) : "";
+
+      // Peer dot beside sender ID
+      let peerDotHtml = "";
+      if (!isMe && sender) {
+        const peerData = peers.get(sender);
+        const isOnline = peerData ? peerData.isOnline : false;
+        const dotClass = isOnline ? "online" : "offline";
+        const dotTitle = isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+        peerDotHtml = `<span class="peer-status-dot ${dotClass}" data-peer="${escapeHtml(sender)}" title="${dotTitle}"></span>`;
+      }
 
       wrapper.innerHTML = `
         <div class="msg-bubble">
-          ${!isMe && sender ? `<div class="msg-sender">${escapeHtml(sender)}</div>` : ""}
+          ${!isMe && sender ? `<div class="msg-sender">${peerDotHtml} ${escapeHtml(sender)}</div>` : ""}
           <div class="msg-text">${escapeHtml(text)}</div>
           <div class="msg-meta">
             ${lockIcon}
@@ -2641,16 +3462,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
-  // Mark message as confirmed/delivered in UI
+  // Mark message as confirmed/sent in UI
   function markMessageDelivered(msgId) {
-    const el = document.getElementById(`msg-${msgId}`);
-    if (el) {
-      const statusElem = el.querySelector(".msg-status");
-      if (statusElem) {
-        statusElem.className = "msg-status";
-        statusElem.textContent = "✓";
-      }
-    }
+    updateMessageStatus(msgId, "sent");
   }
 
   // 3. Room Switching & View Management
@@ -2867,11 +3681,27 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       if (parsed.type === "auth_success") {
         isConnecting = false;
         state.transportMode = "ws";
+        showReconnectBanner(false);
+        isReconnectStopped = false;
         updateTransportBadge("ws");
         updateAntiDpiBadge();
         updateStatus("connected", "متصل (وب‌سوکت)");
         nativeToast(`وارد اتاق امن «${parsed.room || state.room}» شدید`);
         enterChatView(parsed.room || state.room);
+
+        // Load initial room members & ping presence
+        peers.clear();
+        if (Array.isArray(parsed.members)) {
+          for (const m of parsed.members) {
+            if (m.user && m.user !== state.nickname) {
+              const lp = m.last_ping ? Date.now() - Math.max(0, (Date.now() - m.last_ping * 1000)) : Date.now();
+              peers.set(m.user, { lastPing: lp, isOnline: m.online !== false });
+            }
+          }
+        }
+        renderRoomMembers();
+        initPeerPresence();
+
         appendMessage({
           type: "system",
           text: `به اتاق امن و اختصاصی «${parsed.room || state.room}» متصل شدید. تمامی پیام‌ها با رمزنگاری سرتاسری AES-256 و پدینگ تصادفی ضد DPI محافظت می‌شوند.`,
@@ -2884,6 +3714,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       // Authentication Error (Wrong Password or Access Denied)
       if (parsed.type === "auth_error") {
         isConnecting = false;
+        showReconnectBanner(false);
         updateStatus("disconnected", "رمز نادرست");
         showGateError(parsed.text || "رمز عبور اتاق نادرست است! دسترسی غیرمجاز.");
         returnToRoomGate();
@@ -2891,6 +3722,51 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
           ws.close();
         } catch (e) {}
         ws = null;
+        return;
+      }
+
+      // Peer Ping Heartbeat (Live peer status light)
+      if (parsed.type === "peer_ping") {
+        if (parsed.user && parsed.user !== state.nickname) {
+          peers.set(parsed.user, { lastPing: Date.now(), isOnline: true });
+          renderRoomMembers();
+          updatePeerStatusIndicators(parsed.user, true);
+        }
+        return;
+      }
+
+      // Peer Join
+      if (parsed.type === "peer_join") {
+        if (parsed.user && parsed.user !== state.nickname) {
+          peers.set(parsed.user, { lastPing: Date.now(), isOnline: true });
+          renderRoomMembers();
+          updatePeerStatusIndicators(parsed.user, true);
+        }
+        if (parsed.text) {
+          appendMessage({ type: "system", text: parsed.text, isEncrypted: false });
+        }
+        return;
+      }
+
+      // Peer Offline (Turns peer light RED immediately)
+      if (parsed.type === "peer_offline") {
+        if (parsed.user) {
+          if (peers.has(parsed.user)) {
+            peers.get(parsed.user).lastPing = 0;
+            peers.get(parsed.user).isOnline = false;
+          }
+          renderRoomMembers();
+          updatePeerStatusIndicators(parsed.user, false);
+        }
+        if (parsed.text) {
+          appendMessage({ type: "system", text: parsed.text, isEncrypted: false });
+        }
+        return;
+      }
+
+      // Message Status Receipts (✓ Sent -> ✓✓ Delivered -> ◯ Seen Circle)
+      if (parsed.type === "msg_status" && parsed.msgId && parsed.status) {
+        updateMessageStatus(parsed.msgId, parsed.status);
         return;
       }
 
@@ -2986,7 +3862,10 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
       const joinData = await joinRes.json();
       updateStatus("connected", "متصل (تونل امن HTTP)");
+      showReconnectBanner(false);
+      isReconnectStopped = false;
       enterChatView(state.room);
+      initPeerPresence();
 
       if (!state.seenMessageIds.has("sys_http_welcome")) {
         state.seenMessageIds.add("sys_http_welcome");
@@ -3008,7 +3887,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     } catch (err) {
       updateStatus("disconnected", "خطای اتصال");
       showGateError("عدم دسترسی به سرور. فایروال تمامی ارتباطات را مسدود کرده است.");
-      if (state.autoReconnect && !isManualDisconnect) {
+      if (state.autoReconnect && !isManualDisconnect && !isReconnectStopped) {
         scheduleReconnect();
       }
     }
@@ -3024,9 +3903,27 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
         const res = await fetch(url, { method: "GET" });
         if (res.ok) {
           const data = await res.json();
-          if (data.status === "ok" && Array.isArray(data.messages)) {
-            for (const msg of data.messages) {
-              processIncomingChatMessage(msg);
+          if (data.status === "ok") {
+            if (Array.isArray(data.messages)) {
+              for (const msg of data.messages) {
+                processIncomingChatMessage(msg);
+              }
+            }
+            if (Array.isArray(data.receipts)) {
+              for (const r of data.receipts) {
+                if (r.msgId && r.status) {
+                  updateMessageStatus(r.msgId, r.status);
+                }
+              }
+            }
+            if (Array.isArray(data.members)) {
+              for (const m of data.members) {
+                if (m.user && m.user !== state.nickname) {
+                  const lp = m.last_ping ? Date.now() - Math.max(0, (Date.now() - m.last_ping * 1000)) : Date.now();
+                  peers.set(m.user, { lastPing: lp, isOnline: m.online !== false });
+                }
+              }
+              renderRoomMembers();
             }
             if (data.server_time && data.server_time > state.lastSyncTimestamp) {
               state.lastSyncTimestamp = data.server_time;
@@ -3064,7 +3961,12 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   // ==========================================================================
   function processIncomingChatMessage(msg) {
     const msgId = msg.id || `${msg.sender}_${msg.time}_${msg.ciphertext ? msg.ciphertext.slice(0, 10) : ""}`;
-    if (state.seenMessageIds.has(msgId)) return;
+    if (state.seenMessageIds.has(msgId)) {
+      if (msg.sender === state.nickname && msg.status) {
+        updateMessageStatus(msgId, msg.status);
+      }
+      return;
+    }
     state.seenMessageIds.add(msgId);
 
     if (msg.ts && msg.ts > state.lastSyncTimestamp) {
@@ -3096,10 +3998,21 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       time: msg.time || formatTime(),
       isEncrypted: isEncrypted,
       isPending: false,
+      status: msg.status || "sent",
     });
 
-    // If incoming from another user, notify
+    // If incoming from another user:
     if (!isMe) {
+      // 1. Immediately send delivery receipt (2 ticks: ✓✓)
+      sendDeliveryReceipt(msgId);
+
+      // 2. Check if chat screen is currently visible to user
+      if (isChatVisible()) {
+        sendSeenReceipt(msgId);
+      } else {
+        unseenMessageIds.add(msgId);
+      }
+
       const isAppHidden =
         document.hidden ||
         !document.hasFocus() ||
@@ -3115,10 +4028,12 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   }
 
   function scheduleReconnect() {
+    if (isReconnectStopped || !state.autoReconnect || isManualDisconnect) return;
     clearTimeout(reconnectTimer);
     updateStatus("connecting", "تلاش مجدد تا ۴ ثانیه...");
+    showReconnectBanner(true, "در حال تلاش برای اتصال مجدد تا ۴ ثانیه...", false);
     reconnectTimer = setTimeout(() => {
-      if (state.room && state.password) {
+      if (state.room && state.password && !isReconnectStopped && !isManualDisconnect) {
         connectAndJoinRoom(state.room, state.password, state.nickname);
       }
     }, 4000);
@@ -3126,10 +4041,16 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   function leaveRoom() {
     isManualDisconnect = true;
+    showReconnectBanner(false);
+    isReconnectStopped = false;
     clearTimeout(reconnectTimer);
     clearTimeout(wsHandshakeTimer);
     if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
     if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (peerPingInterval) clearInterval(peerPingInterval);
+    if (peerFreshnessChecker) clearInterval(peerFreshnessChecker);
+    peers.clear();
+    renderRoomMembers();
     clearInterval(decoyChaffTimer);
     clearInterval(httpPollTimer);
     clearInterval(wsProbeTimer);
@@ -3261,6 +4182,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
     if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
     autoReconnectInput.checked = state.autoReconnect;
+    if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
     keepCredentialsInput.checked = state.keepCredentials;
     settingsModal.classList.remove("hidden");
   }
@@ -3272,6 +4194,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     if (antiDpiToggle) state.antiDpi = antiDpiToggle.checked;
     if (decoyChaffToggle) state.decoyChaff = decoyChaffToggle.checked;
     state.autoReconnect = autoReconnectInput.checked;
+    if (vibrationToggle) state.vibrationEnabled = vibrationToggle.checked;
     state.keepCredentials = keepCredentialsInput.checked;
     updateAntiDpiBadge();
     persistSettings();

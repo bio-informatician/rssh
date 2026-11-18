@@ -20,6 +20,12 @@
   const btnLeaveRoom = document.getElementById("btnLeaveRoom");
   const btnNotification = document.getElementById("btnNotification");
   const btnClear = document.getElementById("btnClear");
+  const btnCancelReconnectHeader = document.getElementById("btnCancelReconnectHeader");
+
+  // DOM Elements - Reconnect Banner
+  const reconnectBanner = document.getElementById("reconnectBanner");
+  const reconnectBannerText = document.getElementById("reconnectBannerText");
+  const btnToggleReconnect = document.getElementById("btnToggleReconnect");
 
   // DOM Elements - Room Gate
   const roomGate = document.getElementById("roomGate");
@@ -30,6 +36,7 @@
   const btnTogglePassword = document.getElementById("btnTogglePassword");
   const gateError = document.getElementById("gateError");
   const gateErrorText = document.getElementById("gateErrorText");
+  const btnStopGateRetry = document.getElementById("btnStopGateRetry");
   const btnToggleAdvanced = document.getElementById("btnToggleAdvanced");
   const advancedServerBlock = document.getElementById("advancedServerBlock");
   const serverUrlInput = document.getElementById("serverUrl");
@@ -39,6 +46,8 @@
   const chatView = document.getElementById("chatView");
   const notifBanner = document.getElementById("notifBanner");
   const btnEnableNotif = document.getElementById("btnEnableNotif");
+  const roomMembersBar = document.getElementById("roomMembersBar");
+  const membersList = document.getElementById("membersList");
   const chatMessages = document.getElementById("chatMessages");
   const chatForm = document.getElementById("chatForm");
   const messageInput = document.getElementById("messageInput");
@@ -53,6 +62,7 @@
   const btnPresetDirect = document.getElementById("btnPresetDirect");
   const btnPresetCfTunnel = document.getElementById("btnPresetCfTunnel");
   const autoReconnectInput = document.getElementById("autoReconnect");
+  const vibrationToggle = document.getElementById("vibrationToggle");
   const keepCredentialsInput = document.getElementById("keepCredentials");
   const btnTestNotif = document.getElementById("btnTestNotif");
   const btnMinimizeApp = document.getElementById("btnMinimizeApp");
@@ -70,8 +80,17 @@
   let wsProbeTimer = null;
   let isConnecting = false;
   let isManualDisconnect = false;
+  let isReconnectStopped = false;
   let unreadCount = 0;
   const originalTitle = document.title;
+
+  // Peer presence & freshness tracking (2-second ping indicator)
+  const peers = new Map(); // username -> { lastPing: timestamp, isOnline: boolean }
+  let peerPingInterval = null;
+  let peerFreshnessChecker = null;
+
+  // Unseen messages queue for read receipts (turning 2 ticks into circle)
+  const unseenMessageIds = new Set();
 
   const state = {
     nickname: "کاربر",
@@ -82,6 +101,7 @@
     antiDpi: true,
     decoyChaff: true,
     autoReconnect: true,
+    vibrationEnabled: true,
     keepCredentials: true,
     isAuthenticated: false,
     transportMode: "ws", // "ws" | "http"
@@ -109,6 +129,7 @@
   if (savedConfig.antiDpi !== undefined) state.antiDpi = savedConfig.antiDpi;
   if (savedConfig.decoyChaff !== undefined) state.decoyChaff = savedConfig.decoyChaff;
   if (savedConfig.autoReconnect !== undefined) state.autoReconnect = savedConfig.autoReconnect;
+  if (savedConfig.vibrationEnabled !== undefined) state.vibrationEnabled = savedConfig.vibrationEnabled;
   if (savedConfig.keepCredentials !== undefined) state.keepCredentials = savedConfig.keepCredentials;
 
   // Initialize Form Values
@@ -120,8 +141,9 @@
   if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
   if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
   if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
-  autoReconnectInput.checked = state.autoReconnect;
-  keepCredentialsInput.checked = state.keepCredentials;
+  if (autoReconnectInput) autoReconnectInput.checked = state.autoReconnect;
+  if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
+  if (keepCredentialsInput) keepCredentialsInput.checked = state.keepCredentials;
 
   // Save Settings Helper
   function persistSettings() {
@@ -132,6 +154,7 @@
       decoyChaff: state.decoyChaff,
       nickname: state.nickname,
       autoReconnect: state.autoReconnect,
+      vibrationEnabled: state.vibrationEnabled,
       keepCredentials: state.keepCredentials,
       room: state.keepCredentials ? state.room : "",
       password: state.keepCredentials ? state.password : "",
@@ -306,10 +329,13 @@
   }
 
   function nativeVibrate(ms = 40) {
+    if (!state.vibrationEnabled) return;
     if (window.ChatNative && window.ChatNative.vibrate) {
       window.ChatNative.vibrate(ms);
     } else if (navigator.vibrate) {
-      navigator.vibrate(ms);
+      try {
+        navigator.vibrate(ms);
+      } catch (e) {}
     }
   }
 
@@ -368,16 +394,18 @@
     } catch (e) {}
   }
 
-  // Clear unread count when window gains focus
+  // Clear unread count & send read receipts when window gains focus or becomes visible
   window.addEventListener("focus", () => {
     unreadCount = 0;
     document.title = originalTitle;
+    flushUnseenReceipts();
   });
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       unreadCount = 0;
       document.title = originalTitle;
+      flushUnseenReceipts();
     }
   });
 
@@ -405,11 +433,315 @@
   function showGateError(msg) {
     gateErrorText.textContent = msg;
     gateError.classList.remove("hidden");
-    nativeVibrate(150);
+    // Vibration intentionally removed on connection / gate errors per user preference
   }
 
   function hideGateError() {
     gateError.classList.add("hidden");
+  }
+
+  // ==========================================================================
+  // Reconnection Controls (One-click cancel / resume retry)
+  // ==========================================================================
+  function showReconnectBanner(show, text = "", isPaused = false) {
+    if (!reconnectBanner) return;
+    if (show) {
+      reconnectBanner.classList.remove("hidden");
+      if (btnCancelReconnectHeader) btnCancelReconnectHeader.classList.remove("hidden");
+      if (btnStopGateRetry) btnStopGateRetry.classList.remove("hidden");
+
+      if (reconnectBannerText) reconnectBannerText.textContent = text;
+      const spinIcon = reconnectBanner.querySelector(".reconnect-icon");
+
+      if (isPaused) {
+        reconnectBanner.classList.add("paused");
+        if (spinIcon) spinIcon.classList.remove("spinning");
+        if (btnToggleReconnect) {
+          btnToggleReconnect.textContent = "▶ تلاش مجدد";
+          btnToggleReconnect.className = "btn-banner-action resume";
+        }
+        if (btnCancelReconnectHeader) {
+          btnCancelReconnectHeader.textContent = "▶ اتصال";
+          btnCancelReconnectHeader.className = "btn-cancel-reconnect-header resume";
+        }
+        if (btnStopGateRetry) {
+          btnStopGateRetry.textContent = "▶ تلاش مجدد برای اتصال";
+          btnStopGateRetry.className = "btn-gate-stop-retry resume";
+        }
+      } else {
+        reconnectBanner.classList.remove("paused");
+        if (spinIcon) spinIcon.classList.add("spinning");
+        if (btnToggleReconnect) {
+          btnToggleReconnect.textContent = "⏹ توقف تلاش";
+          btnToggleReconnect.className = "btn-banner-action";
+        }
+        if (btnCancelReconnectHeader) {
+          btnCancelReconnectHeader.textContent = "⏹ توقف تلاش";
+          btnCancelReconnectHeader.className = "btn-cancel-reconnect-header";
+        }
+        if (btnStopGateRetry) {
+          btnStopGateRetry.textContent = "⏹ توقف تلاش مجدد";
+          btnStopGateRetry.className = "btn-gate-stop-retry";
+        }
+      }
+    } else {
+      reconnectBanner.classList.add("hidden");
+      if (btnCancelReconnectHeader) btnCancelReconnectHeader.classList.add("hidden");
+      if (btnStopGateRetry) btnStopGateRetry.classList.add("hidden");
+    }
+  }
+
+  function stopReconnect() {
+    isReconnectStopped = true;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    updateStatus("disconnected", "تلاش مجدد متوقف شد");
+    showReconnectBanner(true, "تلاش برای اتصال متوقف شد", true);
+  }
+
+  function resumeReconnect() {
+    isReconnectStopped = false;
+    showReconnectBanner(true, "در حال اتصال به سرور...", false);
+    if (state.room && state.password) {
+      connectAndJoinRoom(state.room, state.password, state.nickname);
+    }
+  }
+
+  if (btnToggleReconnect) {
+    btnToggleReconnect.addEventListener("click", () => {
+      if (isReconnectStopped) resumeReconnect();
+      else stopReconnect();
+    });
+  }
+
+  if (btnCancelReconnectHeader) {
+    btnCancelReconnectHeader.addEventListener("click", () => {
+      if (isReconnectStopped) resumeReconnect();
+      else stopReconnect();
+    });
+  }
+
+  if (btnStopGateRetry) {
+    btnStopGateRetry.addEventListener("click", () => {
+      if (isReconnectStopped) resumeReconnect();
+      else stopReconnect();
+    });
+  }
+
+  // ==========================================================================
+  // Peer Presence & 2-Second Ping Indicator
+  // ==========================================================================
+  function cssEscape(str) {
+    return encodeURIComponent(str).replace(/%/g, "_");
+  }
+
+  function renderRoomMembers() {
+    if (!membersList) return;
+    membersList.innerHTML = "";
+
+    // 1. Current user chip (always online when authenticated)
+    const myChip = document.createElement("span");
+    myChip.className = "member-chip me";
+    myChip.innerHTML = `<span class="peer-status-dot online"></span> <span>${escapeHtml(state.nickname)} (شما)</span>`;
+    membersList.appendChild(myChip);
+
+    // 2. Peer chips with colored status light
+    peers.forEach((data, user) => {
+      if (user === state.nickname) return;
+      const chip = document.createElement("span");
+      chip.className = "member-chip";
+      chip.id = `chip-${cssEscape(user)}`;
+      const dotClass = data.isOnline ? "online" : "offline";
+      const title = data.isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+      chip.title = `${user}: ${title}`;
+      chip.innerHTML = `<span class="peer-status-dot ${dotClass}" title="${title}"></span> <span>${escapeHtml(user)}</span>`;
+      membersList.appendChild(chip);
+    });
+  }
+
+  function updatePeerStatusIndicators(user, isOnline) {
+    const dotClass = isOnline ? "online" : "offline";
+    const title = isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+
+    // Update chip in top members bar
+    const chip = document.getElementById(`chip-${cssEscape(user)}`);
+    if (chip) {
+      chip.title = `${user}: ${title}`;
+      const dot = chip.querySelector(".peer-status-dot");
+      if (dot) {
+        dot.className = `peer-status-dot ${dotClass}`;
+        dot.title = title;
+      }
+    }
+
+    // Update status dot beside sender nickname in chat bubbles
+    const dots = document.querySelectorAll(`.peer-status-dot[data-peer="${user}"]`);
+    dots.forEach((dot) => {
+      dot.className = `peer-status-dot ${dotClass}`;
+      dot.title = title;
+    });
+  }
+
+  function initPeerPresence() {
+    if (peerPingInterval) clearInterval(peerPingInterval);
+    if (peerFreshnessChecker) clearInterval(peerFreshnessChecker);
+
+    // 1. Ping Sender: Send heartbeat ping every 1000ms
+    peerPingInterval = setInterval(() => {
+      if (!state.isAuthenticated) return;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(wrapAntiDpi({
+            type: "peer_ping",
+            room: state.room,
+            user: state.nickname,
+          })));
+        } catch (e) {}
+      } else if (state.transportMode === "http") {
+        sendHttpPeerPing();
+      }
+    }, 1000);
+
+    // 2. Freshness Checker: every 400ms, if now - lastPing > 2000ms -> offline (RED LIGHT)!
+    peerFreshnessChecker = setInterval(() => {
+      if (!state.isAuthenticated) return;
+      const now = Date.now();
+      peers.forEach((data, user) => {
+        if (user === state.nickname) return;
+        const diff = now - (data.lastPing || 0);
+        const isOnline = diff <= 2000; // 2 seconds limit!
+        if (data.isOnline !== isOnline) {
+          data.isOnline = isOnline;
+          updatePeerStatusIndicators(user, isOnline);
+        }
+      });
+    }, 400);
+  }
+
+  async function sendHttpPeerPing() {
+    try {
+      const httpBase = getHttpBaseUrl(state.serverUrl);
+      await fetch(`${httpBase}/api/peer_ping`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wrapAntiDpi({
+          room: state.room,
+          password: state.password,
+          sender: state.nickname,
+        })),
+      });
+    } catch (e) {}
+  }
+
+  // ==========================================================================
+  // Message Status Receipts (✓ Sent -> ✓✓ Delivered -> ◯ Seen Circle)
+  // ==========================================================================
+  function isChatVisible() {
+    if (document.hidden) return false;
+    if (!document.hasFocus()) return false;
+    if (window.ChatNative && window.ChatNative.isAppForeground && !window.ChatNative.isAppForeground()) {
+      return false;
+    }
+    return !chatView.classList.contains("hidden");
+  }
+
+  function renderStatusIcon(status = "sent") {
+    if (status === "pending") {
+      return '<span class="msg-status pending" title="در حال ارسال / صف تحویل...">⏳</span>';
+    }
+    if (status === "delivered") {
+      return '<span class="msg-status delivered" title="تحویل داده شد (رسید به دستش)">✓✓</span>';
+    }
+    if (status === "seen") {
+      return '<span class="msg-status seen" title="مشاهده شد (صفحه چت دیده شد)"><svg class="status-circle-svg" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5"></circle></svg></span>';
+    }
+    return '<span class="msg-status sent" title="ارسال شد به سرور">✓</span>';
+  }
+
+  function updateMessageStatus(msgId, status) {
+    const el = document.getElementById(`msg-${msgId}`);
+    if (!el) return;
+    const statusElem = el.querySelector(".msg-status");
+    if (!statusElem) return;
+
+    if (status === "pending") {
+      statusElem.className = "msg-status pending";
+      statusElem.textContent = "⏳";
+      statusElem.title = "در حال ارسال / صف تحویل...";
+    } else if (status === "sent") {
+      if (statusElem.classList.contains("delivered") || statusElem.classList.contains("seen")) return;
+      statusElem.className = "msg-status sent";
+      statusElem.textContent = "✓";
+      statusElem.title = "ارسال شد به سرور";
+    } else if (status === "delivered") {
+      if (statusElem.classList.contains("seen")) return;
+      statusElem.className = "msg-status delivered";
+      statusElem.textContent = "✓✓";
+      statusElem.title = "تحویل داده شد (رسید به دستش)";
+    } else if (status === "seen") {
+      statusElem.className = "msg-status seen";
+      statusElem.innerHTML = '<svg class="status-circle-svg" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5"></circle></svg>';
+      statusElem.title = "مشاهده شد (صفحه چت دیده شد)";
+    }
+  }
+
+  function sendDeliveryReceipt(msgId) {
+    if (!msgId || !state.room) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(wrapAntiDpi({
+          type: "msg_delivered",
+          msgId: msgId,
+          room: state.room,
+        })));
+      } catch (e) {}
+    } else if (state.transportMode === "http") {
+      sendHttpReceipt("delivered", [msgId]);
+    }
+  }
+
+  function sendSeenReceipt(msgIdOrIds) {
+    if (!state.room) return;
+    const ids = Array.isArray(msgIdOrIds) ? msgIdOrIds : [msgIdOrIds];
+    if (ids.length === 0) return;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(wrapAntiDpi({
+          type: "msg_seen",
+          msgIds: ids,
+          room: state.room,
+        })));
+      } catch (e) {}
+    } else if (state.transportMode === "http") {
+      sendHttpReceipt("seen", ids);
+    }
+  }
+
+  async function sendHttpReceipt(receiptType, msgIds) {
+    try {
+      const httpBase = getHttpBaseUrl(state.serverUrl);
+      await fetch(`${httpBase}/api/receipt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wrapAntiDpi({
+          room: state.room,
+          password: state.password,
+          sender: state.nickname,
+          type: receiptType,
+          msgIds: msgIds,
+        })),
+      });
+    } catch (e) {}
+  }
+
+  function flushUnseenReceipts() {
+    if (!state.isAuthenticated || unseenMessageIds.size === 0) return;
+    if (!isChatVisible()) return;
+
+    const idsToSend = Array.from(unseenMessageIds);
+    unseenMessageIds.clear();
+    sendSeenReceipt(idsToSend);
   }
 
   function formatTime(date = new Date()) {
@@ -428,17 +760,13 @@
       .replace(/'/g, "&#039;");
   }
 
-  function appendMessage({ type = "peer", sender = "", text = "", time = "", id = "", isEncrypted = true, isPending = false }) {
+  function appendMessage({ type = "peer", sender = "", text = "", time = "", id = "", isEncrypted = true, isPending = false, status = "sent" }) {
     // If element with this id already exists in DOM, update status if needed
     if (id) {
       const existing = document.getElementById(`msg-${id}`);
       if (existing) {
         if (!isPending) {
-          const statusElem = existing.querySelector(".msg-status");
-          if (statusElem) {
-            statusElem.className = "msg-status";
-            statusElem.textContent = "✓";
-          }
+          updateMessageStatus(id, status);
         }
         return;
       }
@@ -458,11 +786,22 @@
       const isMe = type === "me";
       const timeStr = time || formatTime();
       const lockIcon = isEncrypted ? '<span class="msg-lock" title="رمزنگاری سرتاسری AES-256">🔒</span>' : "";
-      const statusIcon = isMe ? (isPending ? '<span class="msg-status pending" title="در حال ارسال / صف تحویل...">⏳</span>' : '<span class="msg-status">✓</span>') : "";
+      const initialStatus = isPending ? "pending" : (status || "sent");
+      const statusIcon = isMe ? renderStatusIcon(initialStatus) : "";
+
+      // Peer dot beside sender ID
+      let peerDotHtml = "";
+      if (!isMe && sender) {
+        const peerData = peers.get(sender);
+        const isOnline = peerData ? peerData.isOnline : false;
+        const dotClass = isOnline ? "online" : "offline";
+        const dotTitle = isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+        peerDotHtml = `<span class="peer-status-dot ${dotClass}" data-peer="${escapeHtml(sender)}" title="${dotTitle}"></span>`;
+      }
 
       wrapper.innerHTML = `
         <div class="msg-bubble">
-          ${!isMe && sender ? `<div class="msg-sender">${escapeHtml(sender)}</div>` : ""}
+          ${!isMe && sender ? `<div class="msg-sender">${peerDotHtml} ${escapeHtml(sender)}</div>` : ""}
           <div class="msg-text">${escapeHtml(text)}</div>
           <div class="msg-meta">
             ${lockIcon}
@@ -483,16 +822,9 @@
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
-  // Mark message as confirmed/delivered in UI
+  // Mark message as confirmed/sent in UI
   function markMessageDelivered(msgId) {
-    const el = document.getElementById(`msg-${msgId}`);
-    if (el) {
-      const statusElem = el.querySelector(".msg-status");
-      if (statusElem) {
-        statusElem.className = "msg-status";
-        statusElem.textContent = "✓";
-      }
-    }
+    updateMessageStatus(msgId, "sent");
   }
 
   // 3. Room Switching & View Management
@@ -709,11 +1041,27 @@
       if (parsed.type === "auth_success") {
         isConnecting = false;
         state.transportMode = "ws";
+        showReconnectBanner(false);
+        isReconnectStopped = false;
         updateTransportBadge("ws");
         updateAntiDpiBadge();
         updateStatus("connected", "متصل (وب‌سوکت)");
         nativeToast(`وارد اتاق امن «${parsed.room || state.room}» شدید`);
         enterChatView(parsed.room || state.room);
+
+        // Load initial room members & ping presence
+        peers.clear();
+        if (Array.isArray(parsed.members)) {
+          for (const m of parsed.members) {
+            if (m.user && m.user !== state.nickname) {
+              const lp = m.last_ping ? Date.now() - Math.max(0, (Date.now() - m.last_ping * 1000)) : Date.now();
+              peers.set(m.user, { lastPing: lp, isOnline: m.online !== false });
+            }
+          }
+        }
+        renderRoomMembers();
+        initPeerPresence();
+
         appendMessage({
           type: "system",
           text: `به اتاق امن و اختصاصی «${parsed.room || state.room}» متصل شدید. تمامی پیام‌ها با رمزنگاری سرتاسری AES-256 و پدینگ تصادفی ضد DPI محافظت می‌شوند.`,
@@ -726,6 +1074,7 @@
       // Authentication Error (Wrong Password or Access Denied)
       if (parsed.type === "auth_error") {
         isConnecting = false;
+        showReconnectBanner(false);
         updateStatus("disconnected", "رمز نادرست");
         showGateError(parsed.text || "رمز عبور اتاق نادرست است! دسترسی غیرمجاز.");
         returnToRoomGate();
@@ -733,6 +1082,51 @@
           ws.close();
         } catch (e) {}
         ws = null;
+        return;
+      }
+
+      // Peer Ping Heartbeat (Live peer status light)
+      if (parsed.type === "peer_ping") {
+        if (parsed.user && parsed.user !== state.nickname) {
+          peers.set(parsed.user, { lastPing: Date.now(), isOnline: true });
+          renderRoomMembers();
+          updatePeerStatusIndicators(parsed.user, true);
+        }
+        return;
+      }
+
+      // Peer Join
+      if (parsed.type === "peer_join") {
+        if (parsed.user && parsed.user !== state.nickname) {
+          peers.set(parsed.user, { lastPing: Date.now(), isOnline: true });
+          renderRoomMembers();
+          updatePeerStatusIndicators(parsed.user, true);
+        }
+        if (parsed.text) {
+          appendMessage({ type: "system", text: parsed.text, isEncrypted: false });
+        }
+        return;
+      }
+
+      // Peer Offline (Turns peer light RED immediately)
+      if (parsed.type === "peer_offline") {
+        if (parsed.user) {
+          if (peers.has(parsed.user)) {
+            peers.get(parsed.user).lastPing = 0;
+            peers.get(parsed.user).isOnline = false;
+          }
+          renderRoomMembers();
+          updatePeerStatusIndicators(parsed.user, false);
+        }
+        if (parsed.text) {
+          appendMessage({ type: "system", text: parsed.text, isEncrypted: false });
+        }
+        return;
+      }
+
+      // Message Status Receipts (✓ Sent -> ✓✓ Delivered -> ◯ Seen Circle)
+      if (parsed.type === "msg_status" && parsed.msgId && parsed.status) {
+        updateMessageStatus(parsed.msgId, parsed.status);
         return;
       }
 
@@ -828,7 +1222,10 @@
 
       const joinData = await joinRes.json();
       updateStatus("connected", "متصل (تونل امن HTTP)");
+      showReconnectBanner(false);
+      isReconnectStopped = false;
       enterChatView(state.room);
+      initPeerPresence();
 
       if (!state.seenMessageIds.has("sys_http_welcome")) {
         state.seenMessageIds.add("sys_http_welcome");
@@ -850,7 +1247,7 @@
     } catch (err) {
       updateStatus("disconnected", "خطای اتصال");
       showGateError("عدم دسترسی به سرور. فایروال تمامی ارتباطات را مسدود کرده است.");
-      if (state.autoReconnect && !isManualDisconnect) {
+      if (state.autoReconnect && !isManualDisconnect && !isReconnectStopped) {
         scheduleReconnect();
       }
     }
@@ -866,9 +1263,27 @@
         const res = await fetch(url, { method: "GET" });
         if (res.ok) {
           const data = await res.json();
-          if (data.status === "ok" && Array.isArray(data.messages)) {
-            for (const msg of data.messages) {
-              processIncomingChatMessage(msg);
+          if (data.status === "ok") {
+            if (Array.isArray(data.messages)) {
+              for (const msg of data.messages) {
+                processIncomingChatMessage(msg);
+              }
+            }
+            if (Array.isArray(data.receipts)) {
+              for (const r of data.receipts) {
+                if (r.msgId && r.status) {
+                  updateMessageStatus(r.msgId, r.status);
+                }
+              }
+            }
+            if (Array.isArray(data.members)) {
+              for (const m of data.members) {
+                if (m.user && m.user !== state.nickname) {
+                  const lp = m.last_ping ? Date.now() - Math.max(0, (Date.now() - m.last_ping * 1000)) : Date.now();
+                  peers.set(m.user, { lastPing: lp, isOnline: m.online !== false });
+                }
+              }
+              renderRoomMembers();
             }
             if (data.server_time && data.server_time > state.lastSyncTimestamp) {
               state.lastSyncTimestamp = data.server_time;
@@ -906,7 +1321,12 @@
   // ==========================================================================
   function processIncomingChatMessage(msg) {
     const msgId = msg.id || `${msg.sender}_${msg.time}_${msg.ciphertext ? msg.ciphertext.slice(0, 10) : ""}`;
-    if (state.seenMessageIds.has(msgId)) return;
+    if (state.seenMessageIds.has(msgId)) {
+      if (msg.sender === state.nickname && msg.status) {
+        updateMessageStatus(msgId, msg.status);
+      }
+      return;
+    }
     state.seenMessageIds.add(msgId);
 
     if (msg.ts && msg.ts > state.lastSyncTimestamp) {
@@ -938,10 +1358,21 @@
       time: msg.time || formatTime(),
       isEncrypted: isEncrypted,
       isPending: false,
+      status: msg.status || "sent",
     });
 
-    // If incoming from another user, notify
+    // If incoming from another user:
     if (!isMe) {
+      // 1. Immediately send delivery receipt (2 ticks: ✓✓)
+      sendDeliveryReceipt(msgId);
+
+      // 2. Check if chat screen is currently visible to user
+      if (isChatVisible()) {
+        sendSeenReceipt(msgId);
+      } else {
+        unseenMessageIds.add(msgId);
+      }
+
       const isAppHidden =
         document.hidden ||
         !document.hasFocus() ||
@@ -957,10 +1388,12 @@
   }
 
   function scheduleReconnect() {
+    if (isReconnectStopped || !state.autoReconnect || isManualDisconnect) return;
     clearTimeout(reconnectTimer);
     updateStatus("connecting", "تلاش مجدد تا ۴ ثانیه...");
+    showReconnectBanner(true, "در حال تلاش برای اتصال مجدد تا ۴ ثانیه...", false);
     reconnectTimer = setTimeout(() => {
-      if (state.room && state.password) {
+      if (state.room && state.password && !isReconnectStopped && !isManualDisconnect) {
         connectAndJoinRoom(state.room, state.password, state.nickname);
       }
     }, 4000);
@@ -968,10 +1401,16 @@
 
   function leaveRoom() {
     isManualDisconnect = true;
+    showReconnectBanner(false);
+    isReconnectStopped = false;
     clearTimeout(reconnectTimer);
     clearTimeout(wsHandshakeTimer);
     if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
     if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (peerPingInterval) clearInterval(peerPingInterval);
+    if (peerFreshnessChecker) clearInterval(peerFreshnessChecker);
+    peers.clear();
+    renderRoomMembers();
     clearInterval(decoyChaffTimer);
     clearInterval(httpPollTimer);
     clearInterval(wsProbeTimer);
@@ -1103,6 +1542,7 @@
     if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
     if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
     autoReconnectInput.checked = state.autoReconnect;
+    if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
     keepCredentialsInput.checked = state.keepCredentials;
     settingsModal.classList.remove("hidden");
   }
@@ -1114,6 +1554,7 @@
     if (antiDpiToggle) state.antiDpi = antiDpiToggle.checked;
     if (decoyChaffToggle) state.decoyChaff = decoyChaffToggle.checked;
     state.autoReconnect = autoReconnectInput.checked;
+    if (vibrationToggle) state.vibrationEnabled = vibrationToggle.checked;
     state.keepCredentials = keepCredentialsInput.checked;
     updateAntiDpiBadge();
     persistSettings();

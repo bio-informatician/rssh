@@ -66,32 +66,33 @@ def send_file(file_path, filename, caption, mime_type="application/octet-stream"
         print(f"Telegram error for {filename}: {e}")
         return False
 
-# 1. Dispatch Android APK v1.4.1
+# 1. Dispatch Android APK v1.5.0
 apk_caption = (
-    "📱 رخش چت نسخه ۱.۴.۱ (Rakhssh Chat v1.4.1) - رفع مشکل اتصال اندروید\n\n"
-    "🔧 اصلاحات و بهبودهای مهم:\n"
-    "✅ ۱. رفع خطای جاوااسکریپت در اتصال اتاق: اصلاح تایمرهای هارت‌بیت و ضد DPI که در نسخه قبلی مانع برقراری اتصال در اندروید می‌شد.\n"
-    "✅ ۲. فعال‌سازی دسترسی امن وب‌ویو (Universal Cross-Origin Access) برای تضمین اتصال بی‌نقص وب‌سوکت و تونل HTTP از دارایی‌های محلی APK.\n"
-    "✅ ۳. تنظیم پیش‌فرض آدرس مستقیم سرور (ws://193.168.175.227:8765) و نادیده‌گرفتن کش دامنه‌های مسدودشده کلودفلر.\n"
-    "🛡️ ۴. رمزنگاری سرتاسری AES-256، پدینگ تصادفی ضد DPI، و تونل دومنظوره ضد فایروال."
+    "📱 رخش چت نسخه ۱.۵.۰ (Rakhssh Chat v1.5.0)\n\n"
+    "✨ قابلیت‌ها و اصلاحات جدید:\n"
+    "🔇 ۱. حذف کامل ویبره هنگام قطعی یا خطای اتصال: ویبراتور فقط به دریافت پیام‌های واقعی محدود شد و برای خطای اتصال کاملاً بی‌صدا شد (به همراه سوییچ در تنظیمات).\n"
+    "⏹ ۲. دکمه توقف تلاش مجدد اتصال: امکان لغو و شروع مجدد تلاش برای وصل شدن با یک کلیک در بنر وضعیت و هدر برنامه.\n"
+    "🟢🔴 ۳. چراغ وضعیت پینگ ۲ ثانیه‌ای: نمایش چراغ سبز برای کاربران فعال که در صورت عدم دریافت پینگ تا ۲ ثانیه سریعاً قرمز می‌شود (در نوار اعضا و کنار آیدی فرستنده در چت).\n"
+    "✓✓ / ◯ ۴. سیستم تحویل پیام و تیک‌ها: یک تیک (ارسال به سرور)، دو تیک (رسید به دست کاربر)، و تبدیل دو تیک به دایره (◯) به محض باز شدن و دیدن صفحه چت."
 )
 send_file(
-    os.path.expanduser("~/agent-work/chat-v1.4.1.apk"),
-    "chat-v1.4.1.apk",
+    os.path.expanduser("~/agent-work/chat-v1.5.0.apk"),
+    "chat-v1.5.0.apk",
     apk_caption,
     "application/vnd.android.package-archive"
 )
 
-# 2. Dispatch Server Installer v1.4.1
+# 2. Dispatch Server Installer v1.5.0
 installer_caption = (
-    "🚀 اسکریپت نصب سرور چت نسخه ۱.۴.۱ (Ubuntu Auto-Installer v1.4.1)\n\n"
-    "• رفع باگ‌های هندلر HTTP و افزودن تایم‌اوت محافظ برای هندشیک‌ها\n"
-    "• مجهز به موتور Anti-DPI Traffic Shaping و تزریق پدینگ تصادفی به تمامی پاسخ‌ها\n"
+    "🚀 اسکریپت نصب سرور چت نسخه ۱.۵.۰ (Ubuntu Auto-Installer v1.5.0)\n\n"
+    "• پشتیبانی از رسیدهای دریافت و مشاهده پیام (Delivered & Seen Receipts) در وب‌سوکت و تونل HTTP\n"
+    "• پایش زنده پینگ کاربران با تایم‌اوت ۲ ثانیه‌ای و تفکیک آنلاین/آفلاین\n"
+    "• مجهز به پدینگ تصادفی ضد DPI و تونل دومنظوره\n"
     "• دستور نصب سرور: sudo bash install.sh"
 )
 send_file(
-    os.path.expanduser("~/agent-work/install-v1.4.1.sh"),
-    "install-v1.4.1.sh",
+    os.path.expanduser("~/agent-work/install-v1.5.0.sh"),
+    "install-v1.5.0.sh",
     installer_caption,
     "text/x-shellscript"
 )

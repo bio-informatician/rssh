@@ -31,7 +31,7 @@ import time
 import urllib.parse
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 
 # Connected WebSocket clients
 clients = set()
@@ -456,6 +456,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "sender": sender,
                                 "ciphertext": ciphertext,
                                 "encrypted": encrypted,
+                                "status": "sent",
                                 "time": time_str,
                                 "ts": now
                             }
@@ -476,6 +477,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "sender": sender,
                                 "ciphertext": ciphertext,
                                 "encrypted": encrypted,
+                                "status": "sent",
                                 "time": time_str,
                                 "ts": now
                             }
@@ -489,6 +491,86 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             apply_anti_dpi_padding(resp_dict)
                             writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
                             await writer.drain()
+
+                # REST API 2.5: /api/receipt (Delivery & Seen Receipts via HTTP)
+                elif path == "/api/receipt":
+                    raw_room = str(payload.get("room") or "").strip()
+                    password = str(payload.get("password") or "").strip()
+                    sender = str(payload.get("sender") or "").strip() or "کاربر"
+                    receipt_type = str(payload.get("type") or "delivered")  # delivered or seen
+                    msg_ids = payload.get("msgIds") or ([payload.get("msgId")] if payload.get("msgId") else [])
+
+                    room_id = raw_room.lower()
+                    if not raw_room or not password or room_id not in rooms:
+                        resp_dict = {"status": "error", "text": "اتاق یافت نشد یا دسترسی غیرمجاز."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                    else:
+                        salt = rooms[room_id]["salt"]
+                        expected_hash = rooms[room_id]["hash"]
+                        provided_hash = hash_password(password, salt)
+                        if not hmac.compare_digest(provided_hash, expected_hash):
+                            resp_dict = {"status": "error", "text": "رمز عبور نادرست است."}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
+                            await writer.drain()
+                        else:
+                            now = time.time()
+                            for mid in msg_ids:
+                                if not mid:
+                                    continue
+                                history = rooms[room_id].get("history", [])
+                                for h in history:
+                                    if h.get("id") == mid:
+                                        if receipt_type == "seen" or h.get("status") != "seen":
+                                            h["status"] = receipt_type
+                                        break
+                                receipts = rooms[room_id].setdefault("receipts", [])
+                                receipts.append({"msgId": mid, "status": receipt_type, "by": sender, "ts": now})
+                                if len(receipts) > 100:
+                                    receipts.pop(0)
+
+                                status_update = {
+                                    "type": "msg_status",
+                                    "msgId": mid,
+                                    "status": receipt_type,
+                                    "by": sender,
+                                    "ts": now
+                                }
+                                await broadcast_room(room_id, status_update)
+
+                            resp_dict = {"status": "ok", "updated": len(msg_ids)}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                            await writer.drain()
+
+                # REST API 2.6: /api/peer_ping (HTTP client ping for peer presence)
+                elif path == "/api/peer_ping":
+                    raw_room = str(payload.get("room") or "").strip()
+                    password = str(payload.get("password") or "").strip()
+                    sender = str(payload.get("sender") or "").strip() or "کاربر"
+                    room_id = raw_room.lower()
+                    if room_id in rooms:
+                        salt = rooms[room_id]["salt"]
+                        expected_hash = rooms[room_id]["hash"]
+                        provided_hash = hash_password(password, salt)
+                        if hmac.compare_digest(provided_hash, expected_hash):
+                            now = time.time()
+                            http_m = rooms[room_id].setdefault("http_members", {})
+                            http_m[sender] = {"last_ping": now}
+                            await broadcast_room(room_id, {
+                                "type": "peer_ping",
+                                "room": raw_room,
+                                "user": sender,
+                                "ts": now
+                            })
+                            resp_dict = {"status": "ok", "ts": now}
+                            apply_anti_dpi_padding(resp_dict)
+                            writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                            await writer.drain()
+                            writer.close()
+                            return
                 else:
                     writer.write(b"HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n")
                     await writer.drain()
@@ -526,11 +608,36 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         else:
                             history = rooms[room_id].get("history", [])
                             new_msgs = [m for m in history if m.get("ts", 0) > since_ts]
+                            receipts = rooms[room_id].get("receipts", [])
+                            new_receipts = [r for r in receipts if r.get("ts", 0) > since_ts]
+
+                            now = time.time()
+                            active_members = []
+                            for w in rooms[room_id]["clients"]:
+                                winf = client_info.get(w)
+                                if winf and winf.get("authenticated") and winf.get("nickname"):
+                                    lp = winf.get("last_ping", now)
+                                    active_members.append({
+                                        "user": winf["nickname"],
+                                        "last_ping": lp,
+                                        "online": (now - lp) <= 2.0
+                                    })
+                            for u, uinf in rooms[room_id].get("http_members", {}).items():
+                                lp = uinf.get("last_ping", 0)
+                                if not any(m["user"] == u for m in active_members):
+                                    active_members.append({
+                                        "user": u,
+                                        "last_ping": lp,
+                                        "online": (now - lp) <= 2.0
+                                    })
+
                             resp_dict = {
                                 "status": "ok",
                                 "room": raw_room,
                                 "messages": new_msgs,
-                                "server_time": time.time()
+                                "receipts": new_receipts,
+                                "members": active_members,
+                                "server_time": now
                             }
                             apply_anti_dpi_padding(resp_dict)
                             writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
@@ -729,6 +836,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         rooms[old_room]["clients"].discard(writer)
 
                     # Authorize client in room
+                    now = time.time()
                     rooms[room_id]["clients"].add(writer)
                     client_info[writer] = {
                         "peer": peername,
@@ -736,14 +844,28 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         "room_display": raw_room,
                         "nickname": sender,
                         "authenticated": True,
+                        "last_ping": now,
                     }
 
                     print(f"🔑 [WS Auth Success] '{sender}' joined room '{room_id}' (Members: {len(rooms[room_id]['clients'])})")
+
+                    # Compile existing authenticated room members and their status
+                    members = []
+                    for w in rooms[room_id]["clients"]:
+                        winf = client_info.get(w)
+                        if winf and winf.get("authenticated") and winf.get("nickname"):
+                            lp = winf.get("last_ping", now)
+                            members.append({
+                                "user": winf["nickname"],
+                                "last_ping": lp,
+                                "online": (now - lp) <= 2.0
+                            })
 
                     success_resp = {
                         "type": "auth_success",
                         "room": raw_room,
                         "sender": sender,
+                        "members": members,
                         "text": f"با موفقیت به اتاق امن «{raw_room}» متصل شدید."
                     }
                     apply_anti_dpi_padding(success_resp)
@@ -764,11 +886,95 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                     # Notify other members of this room ONLY
                     join_announce = json.dumps({
-                        "type": "system",
+                        "type": "peer_join",
                         "room": raw_room,
-                        "text": f"«{sender}» وارد اتاق شد."
+                        "user": sender,
+                        "text": f"«{sender}» وارد اتاق شد.",
+                        "ts": now
                     }, ensure_ascii=False)
                     await broadcast_room(room_id, join_announce, sender_writer=writer)
+                    continue
+
+                # Peer Ping Heartbeat (Live peer presence & 2s ping indicator)
+                if msg_type == "peer_ping":
+                    info = client_info.get(writer)
+                    if info and info.get("authenticated") and info.get("room"):
+                        current_room = info["room"]
+                        sender = info.get("nickname") or payload.get("user") or "کاربر"
+                        now = time.time()
+                        info["last_ping"] = now
+                        peer_ping_msg = json.dumps({
+                            "type": "peer_ping",
+                            "room": info.get("room_display", current_room),
+                            "user": sender,
+                            "ts": now
+                        }, ensure_ascii=False)
+                        await broadcast_room(current_room, peer_ping_msg, sender_writer=writer)
+                    continue
+
+                # Message Delivered Receipt (2 ticks: ✓✓)
+                if msg_type == "msg_delivered":
+                    info = client_info.get(writer)
+                    if info and info.get("authenticated") and info.get("room"):
+                        current_room = info["room"]
+                        sender = info.get("nickname") or "کاربر"
+                        msg_id = payload.get("msgId")
+                        msg_ids = payload.get("msgIds") or ([msg_id] if msg_id else [])
+                        now = time.time()
+                        for mid in msg_ids:
+                            if not mid:
+                                continue
+                            history = rooms.get(current_room, {}).get("history", [])
+                            for h in history:
+                                if h.get("id") == mid:
+                                    if h.get("status") != "seen":
+                                        h["status"] = "delivered"
+                                    break
+                            receipts = rooms[current_room].setdefault("receipts", [])
+                            receipts.append({"msgId": mid, "status": "delivered", "by": sender, "ts": now})
+                            if len(receipts) > 100:
+                                receipts.pop(0)
+
+                            status_update = json.dumps({
+                                "type": "msg_status",
+                                "msgId": mid,
+                                "status": "delivered",
+                                "by": sender,
+                                "ts": now
+                            }, ensure_ascii=False)
+                            await broadcast_room(current_room, status_update, sender_writer=writer)
+                    continue
+
+                # Message Seen Receipt (2 ticks become circle: ◯)
+                if msg_type == "msg_seen":
+                    info = client_info.get(writer)
+                    if info and info.get("authenticated") and info.get("room"):
+                        current_room = info["room"]
+                        sender = info.get("nickname") or "کاربر"
+                        msg_id = payload.get("msgId")
+                        msg_ids = payload.get("msgIds") or ([msg_id] if msg_id else [])
+                        now = time.time()
+                        for mid in msg_ids:
+                            if not mid:
+                                continue
+                            history = rooms.get(current_room, {}).get("history", [])
+                            for h in history:
+                                if h.get("id") == mid:
+                                    h["status"] = "seen"
+                                    break
+                            receipts = rooms[current_room].setdefault("receipts", [])
+                            receipts.append({"msgId": mid, "status": "seen", "by": sender, "ts": now})
+                            if len(receipts) > 100:
+                                receipts.pop(0)
+
+                            status_update = json.dumps({
+                                "type": "msg_status",
+                                "msgId": mid,
+                                "status": "seen",
+                                "by": sender,
+                                "ts": now
+                            }, ensure_ascii=False)
+                            await broadcast_room(current_room, status_update, sender_writer=writer)
                     continue
 
                 # Room Chat message
@@ -801,6 +1007,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         "sender": sender,
                         "ciphertext": ciphertext,
                         "encrypted": encrypted,
+                        "status": "sent",
                         "time": time_str,
                         "ts": now
                     }
@@ -823,6 +1030,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         "sender": sender,
                         "ciphertext": ciphertext,
                         "encrypted": encrypted,
+                        "status": "sent",
                         "time": time_str,
                         "ts": now
                     }, ensure_ascii=False)
@@ -847,12 +1055,15 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     if info and info.get("room"):
                         r = info["room"]
                         s = info.get("nickname", "کاربر")
+                        now = time.time()
                         if r in rooms:
                             rooms[r]["clients"].discard(writer)
                             leave_msg = json.dumps({
-                                "type": "system",
+                                "type": "peer_offline",
                                 "room": info.get("room_display", r),
-                                "text": f"«{s}» از اتاق خارج شد."
+                                "user": s,
+                                "text": f"«{s}» از اتاق خارج شد.",
+                                "ts": now
                             }, ensure_ascii=False)
                             await broadcast_room(r, leave_msg)
                         info["room"] = None
@@ -871,9 +1082,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 rooms[r]["clients"].discard(writer)
                 if rooms[r]["clients"]:
                     leave_msg = json.dumps({
-                        "type": "system",
+                        "type": "peer_offline",
                         "room": info.get("room_display", r),
-                        "text": f"«{s}» از گفتگو خارج شد."
+                        "user": s,
+                        "text": f"«{s}» از گفتگو خارج شد.",
+                        "ts": time.time()
                     }, ensure_ascii=False)
                     asyncio.create_task(broadcast_room(r, leave_msg))
 

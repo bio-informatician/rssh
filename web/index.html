@@ -42,13 +42,14 @@
       <div class="header-center">
         <div class="app-title">
           <span>رخش چت</span>
-          <span class="version-tag">v1.4.1</span>
+          <span class="version-tag">v1.5.0</span>
           <span id="transportBadge" class="transport-pill ws" title="روش ارتباط و انتقال داده">⚡ وب‌سوکت</span>
           <span id="antiDpiBadge" class="anti-dpi-pill active" title="سپر ضد DPI: پدینگ تصادفی و فرکانس نامنظم پکت‌ها فعال است">🛡️ ضد DPI</span>
         </div>
         <div class="connection-status">
           <span id="statusIndicator" class="status-dot disconnected"></span>
           <span id="statusText">در انتظار اتصال</span>
+          <button id="btnCancelReconnectHeader" class="btn-cancel-reconnect-header hidden" type="button" title="توقف تلاش برای اتصال">⏹ توقف تلاش</button>
           <span id="roomStatusBadge" class="room-pill hidden">🔒 <span id="currentRoomDisplay"></span></span>
         </div>
       </div>
@@ -69,6 +70,17 @@
       </div>
     </header>
 
+    <!-- Reconnect Control Banner -->
+    <div id="reconnectBanner" class="reconnect-banner hidden">
+      <div class="reconnect-info">
+        <span class="reconnect-icon spinning">🔄</span>
+        <span id="reconnectBannerText">در حال تلاش برای اتصال مجدد...</span>
+      </div>
+      <button type="button" id="btnToggleReconnect" class="btn-banner-action">
+        ⏹ توقف تلاش مجدد
+      </button>
+    </div>
+
     <!-- Room Gate: Shown when user is not inside an authorized room -->
     <div id="roomGate" class="gate-container">
       <div class="gate-card">
@@ -86,6 +98,7 @@
 
         <div id="gateError" class="alert-box danger hidden">
           <span id="gateErrorText">رمز عبور اتاق نادرست است!</span>
+          <button type="button" id="btnStopGateRetry" class="btn-gate-stop-retry hidden">⏹ توقف تلاش مجدد</button>
         </div>
 
         <form id="gateForm" class="gate-form">
@@ -165,6 +178,19 @@
       <div id="notifBanner" class="notif-banner hidden">
         <span>🔔 برای دریافت پیام‌ها روی صفحه قفل و در پس‌زمینه، دسترسی اعلان را تایید کنید.</span>
         <button id="btnEnableNotif" class="btn-banner">فعال‌سازی</button>
+      </div>
+
+      <!-- Room Active Members & Ping Status Bar -->
+      <div id="roomMembersBar" class="room-members-bar">
+        <div class="members-bar-inner">
+          <span class="members-title">
+            <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+            اعضای اتاق:
+          </span>
+          <div id="membersList" class="members-chips-container">
+            <!-- Dynamically populated member chips -->
+          </div>
+        </div>
       </div>
 
       <!-- Chat Messages Scroll View -->
@@ -262,6 +288,13 @@
             <label>
               <input type="checkbox" id="autoReconnect" checked />
               اتصال مجدد خودکار در صورت قطع شدن شبکه
+            </label>
+          </div>
+
+          <div class="form-group checkbox-group">
+            <label>
+              <input type="checkbox" id="vibrationToggle" checked />
+              ویبره هنگام پیام‌های جدید (خطای اتصال هرگز ویبره نمی‌زند)
             </label>
           </div>
 

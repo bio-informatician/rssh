@@ -155,10 +155,66 @@ body {
   vertical-align: middle;
 }
 
+.msg-status {
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 .msg-status.pending {
   color: #f59e0b;
   font-size: 11px;
   animation: pulse-spin 1.5s infinite;
+}
+
+.msg-status.sent {
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 11px;
+}
+
+.msg-status.delivered {
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -2px;
+}
+
+.msg-status.seen {
+  color: #38bdf8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-circle-svg {
+  width: 11px;
+  height: 11px;
+  stroke: #38bdf8;
+  fill: none;
+  stroke-width: 2.2;
+  filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.8));
+}
+
+.peer-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 5px;
+  vertical-align: middle;
+  transition: background-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.peer-status-dot.online {
+  background-color: #22c55e;
+  box-shadow: 0 0 6px #22c55e;
+}
+
+.peer-status-dot.offline {
+  background-color: #ef4444;
+  box-shadow: 0 0 6px #ef4444;
 }
 
 @keyframes pulse-spin {
@@ -766,6 +822,186 @@ body {
   padding: 8px 10px;
   border-radius: 6px;
   direction: rtl;
+}
+
+/* ==========================================================================
+   v1.5.0 Reconnection Controls & Room Members Bar
+   ========================================================================== */
+.btn-cancel-reconnect-header {
+  background: rgba(239, 68, 68, 0.25);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  cursor: pointer;
+  margin-right: 6px;
+  transition: all 0.2s;
+  line-height: 1.4;
+}
+
+.btn-cancel-reconnect-header:hover, .btn-cancel-reconnect-header:active {
+  background: rgba(239, 68, 68, 0.45);
+}
+
+.btn-cancel-reconnect-header.resume {
+  background: rgba(34, 197, 94, 0.25);
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #86efac;
+}
+
+.reconnect-banner {
+  background: rgba(239, 68, 68, 0.16);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  animation: slide-down 0.25s ease-out;
+  z-index: 10;
+}
+
+.reconnect-banner.paused {
+  background: rgba(245, 158, 11, 0.16);
+  border-bottom-color: rgba(245, 158, 11, 0.35);
+  color: #fcd34d;
+}
+
+.reconnect-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.reconnect-icon {
+  display: inline-block;
+  font-size: 13px;
+}
+
+.reconnect-icon.spinning {
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes slide-down {
+  from { transform: translateY(-100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.btn-banner-action {
+  background: rgba(239, 68, 68, 0.3);
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  color: #fee2e2;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.btn-banner-action:hover, .btn-banner-action:active {
+  background: rgba(239, 68, 68, 0.55);
+}
+
+.btn-banner-action.resume {
+  background: rgba(34, 197, 94, 0.25);
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #86efac;
+}
+
+.btn-gate-stop-retry {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  background: rgba(239, 68, 68, 0.25);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: #fee2e2;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-gate-stop-retry:hover, .btn-gate-stop-retry:active {
+  background: rgba(239, 68, 68, 0.45);
+}
+
+.btn-gate-stop-retry.resume {
+  background: rgba(34, 197, 94, 0.25);
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #86efac;
+}
+
+/* Room Members Bar */
+.room-members-bar {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.15);
+  padding: 6px 14px;
+  font-size: 11px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.members-bar-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.members-bar-inner::-webkit-scrollbar {
+  display: none;
+}
+
+.members-title {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.members-chips-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 2px 8px;
+  border-radius: 9999px;
+  color: var(--text-main);
+  font-size: 11px;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.member-chip.me {
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.08);
 }
 
 .hidden {
