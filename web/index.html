@@ -151,7 +151,10 @@
 
           <!-- Connection Mode Selection in Room Gate -->
           <div class="form-group connection-preset-group">
-            <label class="field-label-sm" style="margin-bottom:6px;display:block;">روش اتصال:</label>
+            <div class="connection-mode-header-row">
+              <label class="field-label-sm">روش اتصال به سرور:</label>
+              <span id="gateActiveModeBadge" class="gate-mode-badge direct">⚡ سرور مستقیم</span>
+            </div>
             <div class="preset-buttons-grid">
               <button type="button" id="btnGatePresetDirect" class="preset-btn selected">
                 ⚡ اتصال مستقیم به سرور
@@ -159,6 +162,9 @@
               <button type="button" id="btnGatePresetCfTunnel" class="preset-btn cf-preset">
                 ☁️ اتصال به کلادفلر
               </button>
+            </div>
+            <div id="gateActiveConnNotice" class="active-conn-notice">
+              <span>اتصال انتخابی: </span><strong id="gateActiveConnNoticeText">⚡ سرور مستقیم (193.168.175.227:8765)</strong>
             </div>
             <div class="server-test-row" style="margin-top:8px;">
               <button type="button" id="btnTestGateConn" class="btn-test-conn btn-test-conn-sm">
@@ -253,10 +259,21 @@
     <div id="settingsModal" class="modal-backdrop hidden">
       <div class="modal-card">
         <div class="modal-header">
+          <button id="btnCloseSettingsBack" class="btn-modal-back" title="بازگشت به صفحه اصلی" type="button">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.2" fill="none">
+              <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
+            <span>بازگشت</span>
+          </button>
           <h3>تنظیمات اتصال و سرور</h3>
-          <button id="btnCloseSettings" class="close-btn">&times;</button>
+          <button id="btnCloseSettings" class="close-btn" title="بستن تنظیمات" type="button">&times;</button>
         </div>
         <div class="modal-body">
+          <div id="modalActiveModeBanner" class="modal-active-mode-banner">
+            <span class="mode-label">سرور فعال فعلی:</span>
+            <span id="modalActiveModePill" class="active-mode-pill direct">⚡ اتصال مستقیم به سرور (:8765)</span>
+          </div>
+
           <div class="form-group">
             <label for="modalServerUrl">آدرس سرور WebSocket / تونل امن:</label>
             <input 

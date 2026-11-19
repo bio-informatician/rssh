@@ -1882,7 +1882,10 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
 
           <!-- Connection Mode Selection in Room Gate -->
           <div class="form-group connection-preset-group">
-            <label class="field-label-sm" style="margin-bottom:6px;display:block;">روش اتصال:</label>
+            <div class="connection-mode-header-row">
+              <label class="field-label-sm">روش اتصال به سرور:</label>
+              <span id="gateActiveModeBadge" class="gate-mode-badge direct">⚡ سرور مستقیم</span>
+            </div>
             <div class="preset-buttons-grid">
               <button type="button" id="btnGatePresetDirect" class="preset-btn selected">
                 ⚡ اتصال مستقیم به سرور
@@ -1890,6 +1893,9 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
               <button type="button" id="btnGatePresetCfTunnel" class="preset-btn cf-preset">
                 ☁️ اتصال به کلادفلر
               </button>
+            </div>
+            <div id="gateActiveConnNotice" class="active-conn-notice">
+              <span>اتصال انتخابی: </span><strong id="gateActiveConnNoticeText">⚡ سرور مستقیم (193.168.175.227:8765)</strong>
             </div>
             <div class="server-test-row" style="margin-top:8px;">
               <button type="button" id="btnTestGateConn" class="btn-test-conn btn-test-conn-sm">
@@ -1984,10 +1990,21 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
     <div id="settingsModal" class="modal-backdrop hidden">
       <div class="modal-card">
         <div class="modal-header">
+          <button id="btnCloseSettingsBack" class="btn-modal-back" title="بازگشت به صفحه اصلی" type="button">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.2" fill="none">
+              <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
+            <span>بازگشت</span>
+          </button>
           <h3>تنظیمات اتصال و سرور</h3>
-          <button id="btnCloseSettings" class="close-btn">&times;</button>
+          <button id="btnCloseSettings" class="close-btn" title="بستن تنظیمات" type="button">&times;</button>
         </div>
         <div class="modal-body">
+          <div id="modalActiveModeBanner" class="modal-active-mode-banner">
+            <span class="mode-label">سرور فعال فعلی:</span>
+            <span id="modalActiveModePill" class="active-mode-pill direct">⚡ اتصال مستقیم به سرور (:8765)</span>
+          </div>
+
           <div class="form-group">
             <label for="modalServerUrl">آدرس سرور WebSocket / تونل امن:</label>
             <input 
@@ -2793,67 +2810,123 @@ body {
   background-color: var(--accent-glow);
 }
 
-/* Modal Drawer */
+/* Modal View & Drawer */
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(4px);
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  background-color: var(--bg-main);
+  z-index: 1000;
   display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  z-index: 100;
-  transition: opacity 0.2s;
+  flex-direction: column;
+  transition: opacity 0.2s ease;
+  overflow: hidden;
 }
 
 .modal-backdrop.hidden {
   opacity: 0;
   pointer-events: none;
+  display: none !important;
 }
 
 .modal-card {
   background-color: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: 20px 20px 0 0;
   width: 100%;
-  max-width: 600px;
-  padding: 24px;
-  max-height: 85vh;
-  overflow-y: auto;
-  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.5);
-  animation: slideUp 0.25s ease-out;
-}
-
-@keyframes slideUp {
-  from { transform: translateY(100%); }
-  to { transform: translateY(0); }
+  height: 100%;
+  max-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: none;
 }
 
 .modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  padding: max(12px, env(safe-area-inset-top)) 16px 12px 16px;
+  background-color: var(--bg-surface-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  flex-shrink: 0;
+  margin-bottom: 0;
 }
 
 .modal-header h3 {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
+  color: var(--text-main);
+  text-align: center;
+  flex: 1;
+  margin: 0 10px;
+}
+
+.btn-modal-back {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-light);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 6px 12px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.btn-modal-back:hover, .btn-modal-back:active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: #38bdf8;
+  color: #38bdf8;
 }
 
 .close-btn {
-  background: transparent;
-  border: none;
-  font-size: 24px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  font-size: 20px;
   color: var(--text-muted);
   cursor: pointer;
   line-height: 1;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.close-btn:hover, .close-btn:active {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .modal-body {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  padding: 16px 16px max(24px, env(safe-area-inset-bottom)) 16px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 600px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
 }
 
 .checkbox-group label {
@@ -3331,6 +3404,167 @@ body {
   background: rgba(56, 189, 248, 0.08);
 }
 
+/* Active Connection Notices & Modal Banners */
+.connection-mode-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.gate-mode-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  transition: all 0.2s ease;
+}
+
+.gate-mode-badge.direct {
+  color: #38bdf8;
+  background: rgba(14, 165, 233, 0.16);
+  border: 1px solid rgba(14, 165, 233, 0.4);
+}
+
+.gate-mode-badge.cf {
+  color: #fb923c;
+  background: rgba(249, 115, 22, 0.16);
+  border: 1px solid rgba(249, 115, 22, 0.4);
+}
+
+.active-conn-notice {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(14, 165, 233, 0.1);
+  border: 1px solid rgba(14, 165, 233, 0.3);
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: #7dd3fc;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.active-conn-notice.cf {
+  background: rgba(249, 115, 22, 0.1);
+  border-color: rgba(249, 115, 22, 0.3);
+  color: #fdba74;
+}
+
+.modal-active-mode-banner {
+  background: rgba(14, 165, 233, 0.12);
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 4px;
+  transition: all 0.2s ease;
+}
+
+.modal-active-mode-banner.cf {
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(249, 115, 22, 0.35);
+}
+
+.active-mode-pill {
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.active-mode-pill.direct {
+  color: #38bdf8;
+  background: rgba(14, 165, 233, 0.25);
+  border: 1px solid rgba(14, 165, 233, 0.5);
+}
+
+.active-mode-pill.cf {
+  color: #fb923c;
+  background: rgba(249, 115, 22, 0.25);
+  border: 1px solid rgba(249, 115, 22, 0.5);
+}
+
+/* Modal Open Background & Overlap Prevention */
+body.modal-open {
+  overflow: hidden !important;
+  touch-action: none;
+}
+
+@media (max-width: 768px) {
+  body.modal-open .app-header,
+  body.modal-open #roomGate,
+  body.modal-open #chatView {
+    visibility: hidden !important;
+    pointer-events: none !important;
+  }
+}
+
+/* Desktop Modal Dialog Presentation */
+@media (min-width: 769px) {
+  .modal-backdrop {
+    background-color: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(8px);
+    align-items: center;
+    justify-content: center;
+    padding: 30px 16px;
+  }
+
+  .modal-card {
+    max-width: 540px;
+    height: auto;
+    max-height: 88vh;
+    border-radius: 18px;
+    border: 1px solid var(--border-subtle);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+    animation: zoomModalIn 0.2s ease-out;
+  }
+
+  .modal-header {
+    border-radius: 18px 18px 0 0;
+  }
+
+  .modal-body {
+    padding: 20px;
+  }
+}
+
+@keyframes zoomModalIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Mobile Screen Adaptations */
+@media (max-width: 480px) {
+  .app-header {
+    padding: max(8px, env(safe-area-inset-top)) 10px 8px 10px;
+  }
+  .app-title {
+    font-size: 13px;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .transport-pill {
+    font-size: 9px;
+    padding: 2px 6px;
+  }
+  .anti-dpi-pill {
+    font-size: 9px;
+    padding: 2px 6px;
+  }
+  .connection-status {
+    font-size: 10px;
+  }
+  .gate-card {
+    padding: 20px 14px;
+    border-radius: 16px;
+  }
+}
+
 .hidden {
   display: none !important;
 }
@@ -3383,6 +3617,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const serverUrlInput = document.getElementById("serverUrl");
   const btnGatePresetDirect = document.getElementById("btnGatePresetDirect");
   const btnGatePresetCfTunnel = document.getElementById("btnGatePresetCfTunnel");
+  const gateActiveModeBadge = document.getElementById("gateActiveModeBadge");
+  const gateActiveConnNotice = document.getElementById("gateActiveConnNotice");
+  const gateActiveConnNoticeText = document.getElementById("gateActiveConnNoticeText");
   const btnTestGateConn = document.getElementById("btnTestGateConn");
   const gateTestFeedback = document.getElementById("gateTestFeedback");
   const btnEnterRoom = document.getElementById("btnEnterRoom");
@@ -3399,7 +3636,10 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   // DOM Elements - Settings Modal
   const settingsModal = document.getElementById("settingsModal");
+  const btnCloseSettingsBack = document.getElementById("btnCloseSettingsBack");
   const btnCloseSettings = document.getElementById("btnCloseSettings");
+  const modalActiveModeBanner = document.getElementById("modalActiveModeBanner");
+  const modalActiveModePill = document.getElementById("modalActiveModePill");
   const modalServerUrl = document.getElementById("modalServerUrl");
   const btnTestServerConn = document.getElementById("btnTestServerConn");
   const serverTestFeedback = document.getElementById("serverTestFeedback");
@@ -3506,16 +3746,18 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   // 1. Load Saved Configuration & State
   const savedConfig = JSON.parse(localStorage.getItem("rssh_chat_auth") || "{}");
-  if (savedConfig.serverUrl) {
-    state.serverUrl = savedConfig.serverUrl;
-  } else if (window.location && window.location.host && !window.location.protocol.startsWith("file")) {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    state.serverUrl = `${proto}//${window.location.host}`;
-  } else {
-    state.serverUrl = DIRECT_SERVER_URL;
-  }
   state.activeTunnelUrl = "wss://medications-firewall-angle-counter.trycloudflare.com";
-  state.connectionMode = savedConfig.connectionMode || getConnectionMode(state.serverUrl);
+  state.connectionMode = savedConfig.connectionMode || (savedConfig.serverUrl ? getConnectionMode(savedConfig.serverUrl) : "direct");
+
+  if (state.connectionMode === "cloudflare") {
+    state.serverUrl = (savedConfig.serverUrl && isCloudflareUrl(savedConfig.serverUrl))
+      ? savedConfig.serverUrl
+      : state.activeTunnelUrl;
+  } else {
+    state.serverUrl = (savedConfig.serverUrl && !isCloudflareUrl(savedConfig.serverUrl))
+      ? savedConfig.serverUrl
+      : DIRECT_SERVER_URL;
+  }
 
   if (savedConfig.nickname) state.nickname = savedConfig.nickname;
   if (savedConfig.room) state.room = savedConfig.room;
@@ -3649,7 +3891,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   }
 
   function updatePresetSelectionUI(mode) {
-    const isCf = mode ? (mode === "cloudflare") : isCloudflareUrl(state.serverUrl);
+    const isCf = mode ? (mode === "cloudflare") : (state.connectionMode === "cloudflare" || isCloudflareUrl(state.serverUrl));
 
     // Gate presets
     if (btnGatePresetDirect) {
@@ -3682,49 +3924,72 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
         btnPresetCfTunnel.classList.remove("selected", "cf-preset");
       }
     }
+
+    // Gate screen notices
+    if (gateActiveModeBadge) {
+      gateActiveModeBadge.className = `gate-mode-badge ${isCf ? "cf" : "direct"}`;
+      gateActiveModeBadge.textContent = isCf ? "☁️ کلادفلر" : "⚡ سرور مستقیم";
+    }
+    if (gateActiveConnNotice) {
+      if (isCf) {
+        gateActiveConnNotice.classList.add("cf");
+      } else {
+        gateActiveConnNotice.classList.remove("cf");
+      }
+    }
+    if (gateActiveConnNoticeText) {
+      gateActiveConnNoticeText.textContent = isCf
+        ? "☁️ کلادفلر تونل (پورت 443 امن، ضد فیلتر)"
+        : "⚡ سرور مستقیم (193.168.175.227:8765)";
+    }
+
+    // Modal active banner
+    if (modalActiveModeBanner) {
+      if (isCf) {
+        modalActiveModeBanner.classList.add("cf");
+      } else {
+        modalActiveModeBanner.classList.remove("cf");
+      }
+    }
+    if (modalActiveModePill) {
+      modalActiveModePill.className = `active-mode-pill ${isCf ? "cf" : "direct"}`;
+      modalActiveModePill.textContent = isCf
+        ? "☁️ اتصال به کلادفلر (:443)"
+        : "⚡ اتصال مستقیم به سرور (:8765)";
+    }
   }
 
-  async function selectConnectionPreset(mode, autoTest = false) {
-    if (mode === "cloudflare") {
-      let tunnelUrl = state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com";
-      const fetched = await queryActiveTunnel(DIRECT_SERVER_URL);
-      if (fetched && fetched.ws_url) {
-        tunnelUrl = fetched.ws_url;
-        state.activeTunnelUrl = tunnelUrl;
-      }
-      state.serverUrl = tunnelUrl;
-      state.connectionMode = "cloudflare";
-      if (serverUrlInput) serverUrlInput.value = tunnelUrl;
-      if (modalServerUrl) modalServerUrl.value = tunnelUrl;
-      updatePresetSelectionUI("cloudflare");
-      updateTransportBadge(state.transportMode || "ws");
-      persistSettings();
-      nativeToast("☁️ اتصال به کلادفلر انتخاب شد");
-      if (autoTest) {
-        const feedbackEl = (roomGate && !roomGate.classList.contains("hidden")) ? gateTestFeedback : serverTestFeedback;
-        const btnEl = (roomGate && !roomGate.classList.contains("hidden")) ? btnTestGateConn : btnTestServerConn;
-        testServerConnectivity(tunnelUrl, feedbackEl, btnEl);
-      }
-    } else {
-      state.serverUrl = DIRECT_SERVER_URL;
-      state.connectionMode = "direct";
-      if (serverUrlInput) serverUrlInput.value = DIRECT_SERVER_URL;
-      if (modalServerUrl) modalServerUrl.value = DIRECT_SERVER_URL;
-      updatePresetSelectionUI("direct");
-      updateTransportBadge(state.transportMode || "ws");
-      persistSettings();
-      nativeToast("⚡ اتصال مستقیم به سرور انتخاب شد");
-      if (autoTest) {
-        const feedbackEl = (roomGate && !roomGate.classList.contains("hidden")) ? gateTestFeedback : serverTestFeedback;
-        const btnEl = (roomGate && !roomGate.classList.contains("hidden")) ? btnTestGateConn : btnTestServerConn;
-        testServerConnectivity(DIRECT_SERVER_URL, feedbackEl, btnEl);
-      }
+  function selectConnectionPreset(mode, autoTest = false) {
+    const isCf = (mode === "cloudflare");
+    state.connectionMode = isCf ? "cloudflare" : "direct";
+    const targetUrl = isCf 
+      ? (state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com")
+      : DIRECT_SERVER_URL;
+
+    state.serverUrl = targetUrl;
+    if (serverUrlInput) serverUrlInput.value = targetUrl;
+    if (modalServerUrl) modalServerUrl.value = targetUrl;
+
+    updatePresetSelectionUI(state.connectionMode);
+    updateTransportBadge(state.transportMode || "ws");
+    persistSettings();
+
+    nativeToast(isCf ? "☁️ اتصال به کلادفلر انتخاب شد" : "⚡ اتصال مستقیم به سرور انتخاب شد");
+
+    if (autoTest) {
+      const feedbackEl = (roomGate && !roomGate.classList.contains("hidden")) ? gateTestFeedback : serverTestFeedback;
+      const btnEl = (roomGate && !roomGate.classList.contains("hidden")) ? btnTestGateConn : btnTestServerConn;
+      testServerConnectivity(targetUrl, feedbackEl, btnEl);
+    }
+
+    if (isCf) {
+      queryActiveTunnel();
     }
   }
 
   async function queryActiveTunnel(baseUrl) {
     try {
-      const httpBase = getHttpBaseUrl(baseUrl || state.serverUrl || DIRECT_SERVER_URL);
+      const httpBase = getHttpBaseUrl(baseUrl || DIRECT_SERVER_URL);
       const resp = await fetch(`${httpBase}/api/tunnel`, {
         cache: "no-store",
         signal: AbortSignal.timeout(3000),
@@ -3733,10 +3998,12 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
         const data = await resp.json();
         if (data && data.tunnel && data.tunnel.active && data.tunnel.ws_url) {
           state.activeTunnelUrl = data.tunnel.ws_url;
-          if (state.connectionMode === "cloudflare" || isCloudflareUrl(state.serverUrl)) {
+          if (state.connectionMode === "cloudflare") {
             state.serverUrl = data.tunnel.ws_url;
             if (serverUrlInput) serverUrlInput.value = data.tunnel.ws_url;
             if (modalServerUrl) modalServerUrl.value = data.tunnel.ws_url;
+            updatePresetSelectionUI("cloudflare");
+            updateTransportBadge(state.transportMode || "ws");
             persistSettings();
           }
           return data.tunnel;
@@ -4159,15 +4426,15 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   function updateTransportBadge(mode) {
     if (!transportBadge) return;
-    const isCf = isCloudflareUrl(state.serverUrl);
+    const isCf = (state.connectionMode === "cloudflare") || isCloudflareUrl(state.serverUrl);
     if (mode === "http") {
       transportBadge.className = `transport-pill http ${isCf ? "cf" : "direct"}`;
       transportBadge.textContent = isCf ? "☁️ اتصال به کلادفلر" : "⚡ اتصال مستقیم به سرور";
-      transportBadge.title = isCf ? "اتصال به کلادفلر (تونل امن ضد فایروال HTTP)" : "اتصال مستقیم به سرور (تونل امن ضد فایروال HTTP)";
+      transportBadge.title = isCf ? `اتصال به کلادفلر (تونل امن ضد فایروال HTTP): ${state.serverUrl}` : `اتصال مستقیم به سرور (تونل امن ضد فایروال HTTP): ${state.serverUrl}`;
     } else {
       transportBadge.className = `transport-pill ws ${isCf ? "cf" : "direct"}`;
       transportBadge.textContent = isCf ? "☁️ اتصال به کلادفلر" : "⚡ اتصال مستقیم به سرور";
-      transportBadge.title = isCf ? "اتصال به کلادفلر (وب‌سوکت ایمن WSS پورت 443)" : "اتصال مستقیم به سرور (وب‌سوکت برخط پورت 8765)";
+      transportBadge.title = isCf ? `اتصال به کلادفلر (وب‌سوکت ایمن WSS پورت 443): ${state.serverUrl}` : `اتصال مستقیم به سرور (وب‌سوکت برخط پورت 8765): ${state.serverUrl}`;
     }
   }
 
@@ -4726,7 +4993,17 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     state.room = room.trim();
     state.password = password.trim();
     state.nickname = nickname.trim() || "کاربر";
-    state.serverUrl = sanitizeServerUrl(serverUrlInput.value || modalServerUrl.value);
+
+    // Strictly enforce selected connection provider so we NEVER mistakenly use the other one:
+    if (state.connectionMode === "cloudflare") {
+      const candidate = sanitizeServerUrl(serverUrlInput.value || modalServerUrl.value);
+      state.serverUrl = isCloudflareUrl(candidate) ? candidate : (state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com");
+    } else {
+      const candidate = sanitizeServerUrl(serverUrlInput.value || modalServerUrl.value);
+      state.serverUrl = (!isCloudflareUrl(candidate) && candidate) ? candidate : DIRECT_SERVER_URL;
+    }
+    if (serverUrlInput) serverUrlInput.value = state.serverUrl;
+    if (modalServerUrl) modalServerUrl.value = state.serverUrl;
     persistSettings();
 
     if (!state.room || !state.password) {
@@ -4746,8 +5023,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     isManualDisconnect = false;
     isConnecting = true;
     state.transportMode = "ws";
+    const isCf = (state.connectionMode === "cloudflare") || isCloudflareUrl(state.serverUrl);
     updateTransportBadge("ws");
-    updateStatus("connecting", "در حال بررسی دسترسی...");
+    updateStatus("connecting", isCf ? "در حال اتصال به کلادفلر..." : "در حال اتصال به سرور مستقیم...");
 
     if (ws) {
       try {
@@ -4779,7 +5057,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
     ws.onopen = () => {
       clearTimeout(wsHandshakeTimer);
-      updateStatus("connecting", "در حال تایید کلید امنیتی...");
+      updateStatus("connecting", isCf ? "تایید امنیتی در کلادفلر..." : "تایید امنیتی در سرور مستقیم...");
 
       // Send join room authentication payload with Anti-DPI Traffic Shaping
       const joinPayload = wrapAntiDpi({
@@ -5001,7 +5279,8 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
     if (!state.room || !state.password) return;
 
-    updateStatus("connecting", "فعال‌سازی تونل HTTP...");
+    const isCf = isCloudflareUrl(state.serverUrl);
+    updateStatus("connecting", isCf ? "فعال‌سازی تونل HTTP کلادفلر..." : "فعال‌سازی تونل HTTP سرور مستقیم...");
     const httpBase = getHttpBaseUrl(state.serverUrl);
 
     try {
@@ -5034,7 +5313,6 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       }
 
       const joinData = await joinRes.json();
-      const isCf = isCloudflareUrl(state.serverUrl);
       updateStatus("connected", isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور");
       updateTransportBadge("http");
       nativeToast(isCf ? "✅ اتصال به کلادفلر برقرار شد" : "✅ اتصال مستقیم به سرور برقرار شد");
@@ -5259,8 +5537,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   function scheduleReconnect() {
     if (isReconnectStopped || !state.autoReconnect || isManualDisconnect) return;
     clearTimeout(reconnectTimer);
-    updateStatus("connecting", "تلاش مجدد تا ۴ ثانیه...");
-    showReconnectBanner(true, "در حال تلاش برای اتصال مجدد تا ۴ ثانیه...", false);
+    const isCf = (state.connectionMode === "cloudflare") || isCloudflareUrl(state.serverUrl);
+    updateStatus("connecting", isCf ? "تلاش مجدد اتصال کلادفلر..." : "تلاش مجدد اتصال مستقیم...");
+    showReconnectBanner(true, isCf ? "در حال تلاش برای اتصال مجدد به کلادفلر تا ۴ ثانیه..." : "در حال تلاش برای اتصال مجدد به سرور مستقیم تا ۴ ثانیه...", false);
     reconnectTimer = setTimeout(() => {
       if (state.room && state.password && !isReconnectStopped && !isManualDisconnect) {
         connectAndJoinRoom(state.room, state.password, state.nickname);
@@ -5498,6 +5777,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   // Settings Modal Handlers
   function openSettings() {
+    document.body.classList.add("modal-open");
     modalServerUrl.value = state.serverUrl;
     if (serverTestFeedback) {
       serverTestFeedback.classList.add("hidden");
@@ -5510,12 +5790,15 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     if (notificationToggle) notificationToggle.checked = state.notificationsEnabled;
     if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
     keepCredentialsInput.checked = state.keepCredentials;
-    updatePresetSelectionUI(getConnectionMode(state.serverUrl));
+    updatePresetSelectionUI(state.connectionMode || getConnectionMode(state.serverUrl));
     settingsModal.classList.remove("hidden");
-    queryActiveTunnel();
+    if (state.connectionMode === "cloudflare") {
+      queryActiveTunnel();
+    }
   }
 
   function closeSettings() {
+    document.body.classList.remove("modal-open");
     const oldUrl = state.serverUrl;
     state.serverUrl = sanitizeServerUrl(modalServerUrl.value);
     serverUrlInput.value = state.serverUrl;
@@ -5534,7 +5817,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
     if (oldUrl !== state.serverUrl && state.isAuthenticated && state.room && state.password) {
       nativeToast("در حال انتقال به آدرس جدید سرور...");
-      reconnect(0);
+      connectAndJoinRoom(state.room, state.password, state.nickname);
     }
   }
 
@@ -5567,8 +5850,8 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   // Direct test connection button listeners
   if (btnTestServerConn) {
     btnTestServerConn.addEventListener("click", () => {
-      const isCf = (btnPresetCfTunnel && btnPresetCfTunnel.classList.contains("selected")) || isCloudflareUrl(modalServerUrl.value.trim() || state.serverUrl);
-      const urlToTest = modalServerUrl.value.trim() || (isCf ? (state.activeTunnelUrl || "") : DIRECT_SERVER_URL);
+      const isCf = (state.connectionMode === "cloudflare") || isCloudflareUrl(modalServerUrl.value.trim() || state.serverUrl);
+      const urlToTest = modalServerUrl.value.trim() || (isCf ? (state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com") : DIRECT_SERVER_URL);
       updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
       testServerConnectivity(urlToTest, serverTestFeedback, btnTestServerConn);
     });
@@ -5576,11 +5859,17 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   if (btnTestGateConn) {
     btnTestGateConn.addEventListener("click", () => {
-      const isCf = (btnGatePresetCfTunnel && btnGatePresetCfTunnel.classList.contains("selected")) || isCloudflareUrl(serverUrlInput.value.trim() || state.serverUrl);
-      const urlToTest = serverUrlInput.value.trim() || (isCf ? (state.activeTunnelUrl || "") : DIRECT_SERVER_URL);
+      const isCf = (state.connectionMode === "cloudflare") || (btnGatePresetCfTunnel && btnGatePresetCfTunnel.classList.contains("selected"));
+      const urlToTest = isCf 
+        ? (state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com")
+        : DIRECT_SERVER_URL;
       updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
       testServerConnectivity(urlToTest, gateTestFeedback, btnTestGateConn);
     });
+  }
+
+  if (btnCloseSettingsBack) {
+    btnCloseSettingsBack.addEventListener("click", closeSettings);
   }
 
   if (modalServerUrl) {
