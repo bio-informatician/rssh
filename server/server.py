@@ -31,7 +31,8 @@ import time
 import urllib.parse
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
+PRESENCE_TIMEOUT = 7.0  # seconds threshold for active online status (resilient to mobile network jitter)
 
 # Connected WebSocket clients
 clients = set()
@@ -98,7 +99,7 @@ def hash_password(password: str, salt: str) -> str:
 
 def cleanup_empty_room(room_id: str, force: bool = False):
     """
-    Purges room from RAM if no active WebSocket clients or recent HTTP activity remains.
+    Purges room from RAM if no active WebSocket clients or active HTTP members remain.
     Ensures empty rooms do not linger in memory or lock users out with stale password hashes.
     """
     if not room_id or room_id not in rooms:
@@ -107,46 +108,38 @@ def cleanup_empty_room(room_id: str, force: bool = False):
     room = rooms[room_id]
     now = time.time()
 
-    # If any WebSocket client is actively connected, keep room
-    if room.get("clients") and len(room["clients"]) > 0:
-        return
+    # Prune stale/closed WebSocket clients first
+    for w in list(room.get("clients", set())):
+        if w.is_closing():
+            room["clients"].discard(w)
+            clients.discard(w)
+            client_info.pop(w, None)
 
-    if not force:
-        # Grace period: allow at least 10 seconds for freshly created rooms to be joined
-        if now - room.get("created_at", 0) < 10.0:
+    # Prune stale HTTP members (> PRESENCE_TIMEOUT)
+    http_members = room.get("http_members", {})
+    for u, inf in list(http_members.items()):
+        if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+            http_members.pop(u, None)
+
+    active_ws = len(room.get("clients", set()))
+    active_http = len(http_members)
+
+    # If force, or if truly 0 active users remain, purge immediately
+    if force or (active_ws == 0 and active_http == 0):
+        # Grace period for non-force: 3 seconds for freshly created rooms
+        if not force and (now - room.get("created_at", 0) < 3.0):
             return
-
-        # Check if any HTTP tunnel members were active recently (within last 20 seconds)
-        http_members = room.get("http_members", {})
-        active_http = [u for u, inf in http_members.items() if (now - inf.get("last_ping", 0)) < 20.0]
-        if len(active_http) > 0:
-            return
-
-        # Check if any recent HTTP activity occurred on this room within last 20 seconds
-        if now - room.get("last_http_activity", 0) < 20.0:
-            return
-
-    rooms.pop(room_id, None)
-    print(f"🗑️ [Room Purged] Room '{room_id}' is empty (0 members) and was deleted from memory.")
+        rooms.pop(room_id, None)
+        print(f"🗑️ [Room Purged] Room '{room_id}' is empty (0 members) and was deleted from memory.")
 
 
 async def empty_rooms_reaper():
     """Periodic background task to purge abandoned or empty rooms from memory."""
     while True:
         try:
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
             now = time.time()
             for r_id in list(rooms.keys()):
-                room = rooms.get(r_id)
-                if not room:
-                    continue
-                # Purge stale HTTP members (> 20s old)
-                http_m = room.get("http_members", {})
-                stale_users = [u for u, inf in http_m.items() if (now - inf.get("last_ping", 0)) >= 20.0]
-                for su in stale_users:
-                    http_m.pop(su, None)
-
-                # Clean up if room is empty
                 cleanup_empty_room(r_id)
         except Exception:
             pass
@@ -535,10 +528,41 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "client_id": client_id
                             }
 
+                            # Broadcast peer_join immediately to active WebSocket clients
+                            join_announce = {
+                                "type": "peer_join",
+                                "room": raw_room,
+                                "user": sender,
+                                "text": f"«{sender}» وارد اتاق شد.",
+                                "ts": now
+                            }
+                            await broadcast_room(room_id, join_announce)
+
+                        # Compile active room members and their status
+                        active_members = []
+                        for w in rooms[room_id]["clients"]:
+                            winf = client_info.get(w)
+                            if winf and winf.get("authenticated") and winf.get("nickname"):
+                                lp = winf.get("last_ping", now)
+                                active_members.append({
+                                    "user": winf["nickname"],
+                                    "last_ping": lp,
+                                    "online": (now - lp) <= PRESENCE_TIMEOUT
+                                })
+                        for u, uinf in rooms[room_id].get("http_members", {}).items():
+                            lp = uinf.get("last_ping", 0)
+                            if not any(m["user"] == u for m in active_members):
+                                active_members.append({
+                                    "user": u,
+                                    "last_ping": lp,
+                                    "online": (now - lp) <= PRESENCE_TIMEOUT
+                                })
+
                         resp_dict = {
                             "status": "ok",
                             "room": raw_room,
                             "sender": sender,
+                            "members": active_members,
                             "salt": rooms[room_id]["salt"],
                             "server_time": time.time()
                         }
@@ -714,15 +738,88 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     if room_id in rooms:
                         http_m = rooms[room_id].get("http_members", {})
                         http_m.pop(sender, None)
-                        await broadcast_room(room_id, {
-                            "type": "peer_offline",
-                            "room": raw_room,
-                            "user": sender,
-                            "text": f"«{sender}» از گفتگو خارج شد.",
-                            "ts": time.time()
-                        })
-                        cleanup_empty_room(room_id)
+                        now = time.time()
+                        for u, inf in list(http_m.items()):
+                            if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                                http_m.pop(u, None)
+                        for w in list(rooms[room_id].get("clients", set())):
+                            if w.is_closing():
+                                rooms[room_id]["clients"].discard(w)
+
+                        if len(rooms[room_id]["clients"]) > 0 or len(http_m) > 0:
+                            await broadcast_room(room_id, {
+                                "type": "peer_offline",
+                                "room": raw_room,
+                                "user": sender,
+                                "text": f"«{sender}» از گفتگو خارج شد.",
+                                "ts": now
+                            })
+                        else:
+                            cleanup_empty_room(room_id, force=True)
                     resp_dict = {"status": "ok"}
+                    apply_anti_dpi_padding(resp_dict)
+                    writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                    await writer.drain()
+                    writer.close()
+                    return
+
+                # REST API 2.8: /api/delete_room (Explicit deletion by sole member via HTTP)
+                elif path == "/api/delete_room":
+                    raw_room = str(payload.get("room") or "").strip()
+                    password = str(payload.get("password") or "").strip()
+                    sender = str(payload.get("sender") or "").strip() or "کاربر"
+                    room_id = raw_room.lower()
+
+                    if not raw_room or not password:
+                        resp_dict = {"status": "error", "text": "نام اتاق و رمز عبور الزامی است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(400, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                        writer.close()
+                        return
+
+                    if room_id not in rooms:
+                        resp_dict = {"status": "ok", "room": raw_room, "text": "اتاق وجود ندارد یا قبلاً پاک شده است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                        writer.close()
+                        return
+
+                    salt = rooms[room_id]["salt"]
+                    expected_hash = rooms[room_id]["hash"]
+                    provided_hash = hash_password(password, salt)
+                    if not hmac.compare_digest(provided_hash, expected_hash):
+                        resp_dict = {"status": "error", "text": "رمز عبور نادرست است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                        writer.close()
+                        return
+
+                    now = time.time()
+                    for w in list(rooms[room_id].get("clients", set())):
+                        if w.is_closing():
+                            rooms[room_id]["clients"].discard(w)
+                    http_m = rooms[room_id].get("http_members", {})
+                    for u, inf in list(http_m.items()):
+                        if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                            http_m.pop(u, None)
+
+                    other_ws = len(rooms[room_id].get("clients", set()))
+                    other_http = [u for u in http_m.keys() if u.lower() != sender.lower()]
+
+                    if other_ws > 0 or len(other_http) > 0:
+                        resp_dict = {"status": "error", "text": "امکان حذف اتاق وجود ندارد زیرا کاربران دیگری در اتاق حضور دارند."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(409, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                        writer.close()
+                        return
+
+                    rooms.pop(room_id, None)
+                    print(f"💥 [Room Explicitly Deleted via HTTP] Room '{room_id}' was deleted by sole member '{sender}'")
+                    resp_dict = {"status": "ok", "room": raw_room, "text": "اتاق با موفقیت پاکسازی و حذف شد."}
                     apply_anti_dpi_padding(resp_dict)
                     writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
                     await writer.drain()
@@ -779,7 +876,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                     active_members.append({
                                         "user": winf["nickname"],
                                         "last_ping": lp,
-                                        "online": (now - lp) <= 2.0
+                                        "online": (now - lp) <= PRESENCE_TIMEOUT
                                     })
                             for u, uinf in rooms[room_id].get("http_members", {}).items():
                                 lp = uinf.get("last_ping", 0)
@@ -787,7 +884,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                     active_members.append({
                                         "user": u,
                                         "last_ping": lp,
-                                        "online": (now - lp) <= 2.0
+                                        "online": (now - lp) <= PRESENCE_TIMEOUT
                                     })
 
                             resp_dict = {
@@ -1086,7 +1183,15 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             members.append({
                                 "user": winf["nickname"],
                                 "last_ping": lp,
-                                "online": (now - lp) <= 2.0
+                                "online": (now - lp) <= PRESENCE_TIMEOUT
+                            })
+                    for u, uinf in rooms[room_id].get("http_members", {}).items():
+                        lp = uinf.get("last_ping", 0)
+                        if not any(m["user"] == u for m in members):
+                            members.append({
+                                "user": u,
+                                "last_ping": lp,
+                                "online": (now - lp) <= PRESENCE_TIMEOUT
                             })
 
                     success_resp = {
@@ -1113,14 +1218,14 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         await writer.drain()
 
                     # Notify other members of this room ONLY
-                    join_announce = json.dumps({
+                    join_announce_dict = {
                         "type": "peer_join",
                         "room": raw_room,
                         "user": sender,
                         "text": f"«{sender}» وارد اتاق شد.",
                         "ts": now
-                    }, ensure_ascii=False)
-                    await broadcast_room(room_id, join_announce, sender_writer=writer)
+                    }
+                    await broadcast_room(room_id, join_announce_dict, sender_writer=writer)
                     continue
 
                 # Peer Ping Heartbeat (Live peer presence & 2s ping indicator)
@@ -1149,6 +1254,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         msg_id = payload.get("msgId")
                         msg_ids = payload.get("msgIds") or ([msg_id] if msg_id else [])
                         now = time.time()
+                        info["last_ping"] = now
                         for mid in msg_ids:
                             if not mid:
                                 continue
@@ -1182,6 +1288,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         msg_id = payload.get("msgId")
                         msg_ids = payload.get("msgIds") or ([msg_id] if msg_id else [])
                         now = time.time()
+                        info["last_ping"] = now
                         for mid in msg_ids:
                             if not mid:
                                 continue
@@ -1229,6 +1336,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         continue
 
                     now = time.time()
+                    info["last_ping"] = now
                     msg_record = {
                         "id": msg_id,
                         "room": display_room,
@@ -1277,6 +1385,62 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     await writer.drain()
                     continue
 
+                # Delete room request (Only permitted if sole active member)
+                if msg_type == "delete_room":
+                    info = client_info.get(writer)
+                    if not info or not info.get("authenticated") or not info.get("room"):
+                        continue
+                    current_room = info["room"]
+                    password = str(payload.get("password") or "").strip()
+                    sender = info.get("nickname", "کاربر")
+
+                    if current_room not in rooms:
+                        resp = {"type": "room_deleted", "room": current_room, "status": "ok", "text": "اتاق قبلاً حذف شده است."}
+                        apply_anti_dpi_padding(resp)
+                        writer.write(encode_frame(json.dumps(resp, ensure_ascii=False)))
+                        await writer.drain()
+                        continue
+
+                    # Verify password
+                    salt = rooms[current_room]["salt"]
+                    expected_hash = rooms[current_room]["hash"]
+                    provided_hash = hash_password(password, salt)
+                    if not hmac.compare_digest(provided_hash, expected_hash):
+                        err = {"type": "error", "text": "رمز عبور نادرست است. امکان حذف اتاق وجود ندارد."}
+                        apply_anti_dpi_padding(err)
+                        writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
+                        await writer.drain()
+                        continue
+
+                    now = time.time()
+                    for w in list(rooms[current_room].get("clients", set())):
+                        if w.is_closing():
+                            rooms[current_room]["clients"].discard(w)
+                    http_m = rooms[current_room].get("http_members", {})
+                    for u, inf in list(http_m.items()):
+                        if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                            http_m.pop(u, None)
+
+                    other_ws = [w for w in rooms[current_room]["clients"] if w is not writer]
+                    other_http = [u for u in http_m.keys() if u.lower() != sender.lower()]
+
+                    if other_ws or other_http:
+                        err = {"type": "error", "text": "امکان حذف اتاق وجود ندارد زیرا کاربران دیگری در اتاق حضور دارند."}
+                        apply_anti_dpi_padding(err)
+                        writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
+                        await writer.drain()
+                        continue
+
+                    rooms.pop(current_room, None)
+                    print(f"💥 [Room Explicitly Deleted via WS] Room '{current_room}' was deleted by sole member '{sender}'")
+                    resp = {"type": "room_deleted", "room": current_room, "status": "ok", "text": "اتاق با موفقیت پاکسازی و حذف شد."}
+                    apply_anti_dpi_padding(resp)
+                    writer.write(encode_frame(json.dumps(resp, ensure_ascii=False)))
+                    await writer.drain()
+                    info["room"] = None
+                    info["authenticated"] = False
+                    continue
+
                 # Leave room request
                 if msg_type == "leave":
                     info = client_info.get(writer)
@@ -1286,7 +1450,15 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         now = time.time()
                         if r in rooms:
                             rooms[r]["clients"].discard(writer)
-                            if rooms[r]["clients"]:
+                            for w in list(rooms[r].get("clients", set())):
+                                if w.is_closing():
+                                    rooms[r]["clients"].discard(w)
+                            http_m = rooms[r].get("http_members", {})
+                            for u, inf in list(http_m.items()):
+                                if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                                    http_m.pop(u, None)
+
+                            if len(rooms[r]["clients"]) > 0 or len(http_m) > 0:
                                 leave_msg = json.dumps({
                                     "type": "peer_offline",
                                     "room": info.get("room_display", r),
@@ -1311,13 +1483,22 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             s = info.get("nickname", "کاربر")
             if r in rooms:
                 rooms[r]["clients"].discard(writer)
-                if rooms[r]["clients"]:
+                for w in list(rooms[r].get("clients", set())):
+                    if w.is_closing():
+                        rooms[r]["clients"].discard(w)
+                now = time.time()
+                http_m = rooms[r].get("http_members", {})
+                for u, inf in list(http_m.items()):
+                    if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                        http_m.pop(u, None)
+
+                if len(rooms[r]["clients"]) > 0 or len(http_m) > 0:
                     leave_msg = json.dumps({
                         "type": "peer_offline",
                         "room": info.get("room_display", r),
                         "user": s,
                         "text": f"«{s}» از گفتگو خارج شد.",
-                        "ts": time.time()
+                        "ts": now
                     }, ensure_ascii=False)
                     asyncio.create_task(broadcast_room(r, leave_msg))
                 else:

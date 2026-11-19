@@ -277,6 +277,52 @@ body {
   opacity: 1;
 }
 
+.btn-danger-icon {
+  color: #f87171;
+}
+
+.btn-danger-icon:hover:not(:disabled):not(.disabled) {
+  background: rgba(239, 68, 68, 0.18);
+  color: #ef4444;
+}
+
+.icon-btn.disabled,
+.icon-btn:disabled {
+  opacity: 0.3 !important;
+  cursor: not-allowed !important;
+  pointer-events: auto !important;
+}
+
+.btn-delete-room-modal {
+  width: 100%;
+  margin-top: 8px;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+.btn-delete-room-modal:hover:not(:disabled):not(.disabled) {
+  background: rgba(239, 68, 68, 0.35);
+  border-color: #ef4444;
+  color: #fff;
+}
+
+.btn-delete-room-modal.disabled,
+.btn-delete-room-modal:disabled {
+  opacity: 0.4 !important;
+  cursor: not-allowed !important;
+  border-color: rgba(239, 68, 68, 0.2) !important;
+  color: #888 !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+
 /* Room Authentication Gate */
 .gate-container {
   flex: 1;

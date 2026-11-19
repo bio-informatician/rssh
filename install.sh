@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# 🚀 Rakhssh Chat Server v1.5.0 - Ubuntu Auto Installer & Systemd Service Setup
+# 🚀 Rakhssh Chat Server v1.6.0 - Ubuntu Auto Installer & Systemd Service Setup
 # Self-contained, automated installer for Ubuntu 20.04 / 22.04 / 24.04 LTS.
 # Supports Android (chat.apk), iOS (PWA Web App), and Web Browsers.
 #
@@ -14,7 +14,7 @@
 set -e
 
 # Version
-INSTALLER_VERSION="1.5.0"
+INSTALLER_VERSION="1.6.0"
 
 # ANSI Color codes
 C_RESET='\033[0m'
@@ -150,7 +150,8 @@ import time
 import urllib.parse
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
+PRESENCE_TIMEOUT = 7.0  # seconds threshold for active online status (resilient to mobile network jitter)
 
 # Connected WebSocket clients
 clients = set()
@@ -217,7 +218,7 @@ def hash_password(password: str, salt: str) -> str:
 
 def cleanup_empty_room(room_id: str, force: bool = False):
     """
-    Purges room from RAM if no active WebSocket clients or recent HTTP activity remains.
+    Purges room from RAM if no active WebSocket clients or active HTTP members remain.
     Ensures empty rooms do not linger in memory or lock users out with stale password hashes.
     """
     if not room_id or room_id not in rooms:
@@ -226,46 +227,38 @@ def cleanup_empty_room(room_id: str, force: bool = False):
     room = rooms[room_id]
     now = time.time()
 
-    # If any WebSocket client is actively connected, keep room
-    if room.get("clients") and len(room["clients"]) > 0:
-        return
+    # Prune stale/closed WebSocket clients first
+    for w in list(room.get("clients", set())):
+        if w.is_closing():
+            room["clients"].discard(w)
+            clients.discard(w)
+            client_info.pop(w, None)
 
-    if not force:
-        # Grace period: allow at least 10 seconds for freshly created rooms to be joined
-        if now - room.get("created_at", 0) < 10.0:
+    # Prune stale HTTP members (> PRESENCE_TIMEOUT)
+    http_members = room.get("http_members", {})
+    for u, inf in list(http_members.items()):
+        if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+            http_members.pop(u, None)
+
+    active_ws = len(room.get("clients", set()))
+    active_http = len(http_members)
+
+    # If force, or if truly 0 active users remain, purge immediately
+    if force or (active_ws == 0 and active_http == 0):
+        # Grace period for non-force: 3 seconds for freshly created rooms
+        if not force and (now - room.get("created_at", 0) < 3.0):
             return
-
-        # Check if any HTTP tunnel members were active recently (within last 20 seconds)
-        http_members = room.get("http_members", {})
-        active_http = [u for u, inf in http_members.items() if (now - inf.get("last_ping", 0)) < 20.0]
-        if len(active_http) > 0:
-            return
-
-        # Check if any recent HTTP activity occurred on this room within last 20 seconds
-        if now - room.get("last_http_activity", 0) < 20.0:
-            return
-
-    rooms.pop(room_id, None)
-    print(f"🗑️ [Room Purged] Room '{room_id}' is empty (0 members) and was deleted from memory.")
+        rooms.pop(room_id, None)
+        print(f"🗑️ [Room Purged] Room '{room_id}' is empty (0 members) and was deleted from memory.")
 
 
 async def empty_rooms_reaper():
     """Periodic background task to purge abandoned or empty rooms from memory."""
     while True:
         try:
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
             now = time.time()
             for r_id in list(rooms.keys()):
-                room = rooms.get(r_id)
-                if not room:
-                    continue
-                # Purge stale HTTP members (> 20s old)
-                http_m = room.get("http_members", {})
-                stale_users = [u for u, inf in http_m.items() if (now - inf.get("last_ping", 0)) >= 20.0]
-                for su in stale_users:
-                    http_m.pop(su, None)
-
-                # Clean up if room is empty
                 cleanup_empty_room(r_id)
         except Exception:
             pass
@@ -654,10 +647,41 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "client_id": client_id
                             }
 
+                            # Broadcast peer_join immediately to active WebSocket clients
+                            join_announce = {
+                                "type": "peer_join",
+                                "room": raw_room,
+                                "user": sender,
+                                "text": f"«{sender}» وارد اتاق شد.",
+                                "ts": now
+                            }
+                            await broadcast_room(room_id, join_announce)
+
+                        # Compile active room members and their status
+                        active_members = []
+                        for w in rooms[room_id]["clients"]:
+                            winf = client_info.get(w)
+                            if winf and winf.get("authenticated") and winf.get("nickname"):
+                                lp = winf.get("last_ping", now)
+                                active_members.append({
+                                    "user": winf["nickname"],
+                                    "last_ping": lp,
+                                    "online": (now - lp) <= PRESENCE_TIMEOUT
+                                })
+                        for u, uinf in rooms[room_id].get("http_members", {}).items():
+                            lp = uinf.get("last_ping", 0)
+                            if not any(m["user"] == u for m in active_members):
+                                active_members.append({
+                                    "user": u,
+                                    "last_ping": lp,
+                                    "online": (now - lp) <= PRESENCE_TIMEOUT
+                                })
+
                         resp_dict = {
                             "status": "ok",
                             "room": raw_room,
                             "sender": sender,
+                            "members": active_members,
                             "salt": rooms[room_id]["salt"],
                             "server_time": time.time()
                         }
@@ -833,15 +857,88 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     if room_id in rooms:
                         http_m = rooms[room_id].get("http_members", {})
                         http_m.pop(sender, None)
-                        await broadcast_room(room_id, {
-                            "type": "peer_offline",
-                            "room": raw_room,
-                            "user": sender,
-                            "text": f"«{sender}» از گفتگو خارج شد.",
-                            "ts": time.time()
-                        })
-                        cleanup_empty_room(room_id)
+                        now = time.time()
+                        for u, inf in list(http_m.items()):
+                            if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                                http_m.pop(u, None)
+                        for w in list(rooms[room_id].get("clients", set())):
+                            if w.is_closing():
+                                rooms[room_id]["clients"].discard(w)
+
+                        if len(rooms[room_id]["clients"]) > 0 or len(http_m) > 0:
+                            await broadcast_room(room_id, {
+                                "type": "peer_offline",
+                                "room": raw_room,
+                                "user": sender,
+                                "text": f"«{sender}» از گفتگو خارج شد.",
+                                "ts": now
+                            })
+                        else:
+                            cleanup_empty_room(room_id, force=True)
                     resp_dict = {"status": "ok"}
+                    apply_anti_dpi_padding(resp_dict)
+                    writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                    await writer.drain()
+                    writer.close()
+                    return
+
+                # REST API 2.8: /api/delete_room (Explicit deletion by sole member via HTTP)
+                elif path == "/api/delete_room":
+                    raw_room = str(payload.get("room") or "").strip()
+                    password = str(payload.get("password") or "").strip()
+                    sender = str(payload.get("sender") or "").strip() or "کاربر"
+                    room_id = raw_room.lower()
+
+                    if not raw_room or not password:
+                        resp_dict = {"status": "error", "text": "نام اتاق و رمز عبور الزامی است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(400, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                        writer.close()
+                        return
+
+                    if room_id not in rooms:
+                        resp_dict = {"status": "ok", "room": raw_room, "text": "اتاق وجود ندارد یا قبلاً پاک شده است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                        writer.close()
+                        return
+
+                    salt = rooms[room_id]["salt"]
+                    expected_hash = rooms[room_id]["hash"]
+                    provided_hash = hash_password(password, salt)
+                    if not hmac.compare_digest(provided_hash, expected_hash):
+                        resp_dict = {"status": "error", "text": "رمز عبور نادرست است."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(401, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                        writer.close()
+                        return
+
+                    now = time.time()
+                    for w in list(rooms[room_id].get("clients", set())):
+                        if w.is_closing():
+                            rooms[room_id]["clients"].discard(w)
+                    http_m = rooms[room_id].get("http_members", {})
+                    for u, inf in list(http_m.items()):
+                        if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                            http_m.pop(u, None)
+
+                    other_ws = len(rooms[room_id].get("clients", set()))
+                    other_http = [u for u in http_m.keys() if u.lower() != sender.lower()]
+
+                    if other_ws > 0 or len(other_http) > 0:
+                        resp_dict = {"status": "error", "text": "امکان حذف اتاق وجود ندارد زیرا کاربران دیگری در اتاق حضور دارند."}
+                        apply_anti_dpi_padding(resp_dict)
+                        writer.write(make_http_json_response(409, json.dumps(resp_dict, ensure_ascii=False)))
+                        await writer.drain()
+                        writer.close()
+                        return
+
+                    rooms.pop(room_id, None)
+                    print(f"💥 [Room Explicitly Deleted via HTTP] Room '{room_id}' was deleted by sole member '{sender}'")
+                    resp_dict = {"status": "ok", "room": raw_room, "text": "اتاق با موفقیت پاکسازی و حذف شد."}
                     apply_anti_dpi_padding(resp_dict)
                     writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
                     await writer.drain()
@@ -898,7 +995,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                     active_members.append({
                                         "user": winf["nickname"],
                                         "last_ping": lp,
-                                        "online": (now - lp) <= 2.0
+                                        "online": (now - lp) <= PRESENCE_TIMEOUT
                                     })
                             for u, uinf in rooms[room_id].get("http_members", {}).items():
                                 lp = uinf.get("last_ping", 0)
@@ -906,7 +1003,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                     active_members.append({
                                         "user": u,
                                         "last_ping": lp,
-                                        "online": (now - lp) <= 2.0
+                                        "online": (now - lp) <= PRESENCE_TIMEOUT
                                     })
 
                             resp_dict = {
@@ -1205,7 +1302,15 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             members.append({
                                 "user": winf["nickname"],
                                 "last_ping": lp,
-                                "online": (now - lp) <= 2.0
+                                "online": (now - lp) <= PRESENCE_TIMEOUT
+                            })
+                    for u, uinf in rooms[room_id].get("http_members", {}).items():
+                        lp = uinf.get("last_ping", 0)
+                        if not any(m["user"] == u for m in members):
+                            members.append({
+                                "user": u,
+                                "last_ping": lp,
+                                "online": (now - lp) <= PRESENCE_TIMEOUT
                             })
 
                     success_resp = {
@@ -1232,14 +1337,14 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         await writer.drain()
 
                     # Notify other members of this room ONLY
-                    join_announce = json.dumps({
+                    join_announce_dict = {
                         "type": "peer_join",
                         "room": raw_room,
                         "user": sender,
                         "text": f"«{sender}» وارد اتاق شد.",
                         "ts": now
-                    }, ensure_ascii=False)
-                    await broadcast_room(room_id, join_announce, sender_writer=writer)
+                    }
+                    await broadcast_room(room_id, join_announce_dict, sender_writer=writer)
                     continue
 
                 # Peer Ping Heartbeat (Live peer presence & 2s ping indicator)
@@ -1268,6 +1373,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         msg_id = payload.get("msgId")
                         msg_ids = payload.get("msgIds") or ([msg_id] if msg_id else [])
                         now = time.time()
+                        info["last_ping"] = now
                         for mid in msg_ids:
                             if not mid:
                                 continue
@@ -1301,6 +1407,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         msg_id = payload.get("msgId")
                         msg_ids = payload.get("msgIds") or ([msg_id] if msg_id else [])
                         now = time.time()
+                        info["last_ping"] = now
                         for mid in msg_ids:
                             if not mid:
                                 continue
@@ -1348,6 +1455,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         continue
 
                     now = time.time()
+                    info["last_ping"] = now
                     msg_record = {
                         "id": msg_id,
                         "room": display_room,
@@ -1396,6 +1504,62 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     await writer.drain()
                     continue
 
+                # Delete room request (Only permitted if sole active member)
+                if msg_type == "delete_room":
+                    info = client_info.get(writer)
+                    if not info or not info.get("authenticated") or not info.get("room"):
+                        continue
+                    current_room = info["room"]
+                    password = str(payload.get("password") or "").strip()
+                    sender = info.get("nickname", "کاربر")
+
+                    if current_room not in rooms:
+                        resp = {"type": "room_deleted", "room": current_room, "status": "ok", "text": "اتاق قبلاً حذف شده است."}
+                        apply_anti_dpi_padding(resp)
+                        writer.write(encode_frame(json.dumps(resp, ensure_ascii=False)))
+                        await writer.drain()
+                        continue
+
+                    # Verify password
+                    salt = rooms[current_room]["salt"]
+                    expected_hash = rooms[current_room]["hash"]
+                    provided_hash = hash_password(password, salt)
+                    if not hmac.compare_digest(provided_hash, expected_hash):
+                        err = {"type": "error", "text": "رمز عبور نادرست است. امکان حذف اتاق وجود ندارد."}
+                        apply_anti_dpi_padding(err)
+                        writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
+                        await writer.drain()
+                        continue
+
+                    now = time.time()
+                    for w in list(rooms[current_room].get("clients", set())):
+                        if w.is_closing():
+                            rooms[current_room]["clients"].discard(w)
+                    http_m = rooms[current_room].get("http_members", {})
+                    for u, inf in list(http_m.items()):
+                        if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                            http_m.pop(u, None)
+
+                    other_ws = [w for w in rooms[current_room]["clients"] if w is not writer]
+                    other_http = [u for u in http_m.keys() if u.lower() != sender.lower()]
+
+                    if other_ws or other_http:
+                        err = {"type": "error", "text": "امکان حذف اتاق وجود ندارد زیرا کاربران دیگری در اتاق حضور دارند."}
+                        apply_anti_dpi_padding(err)
+                        writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
+                        await writer.drain()
+                        continue
+
+                    rooms.pop(current_room, None)
+                    print(f"💥 [Room Explicitly Deleted via WS] Room '{current_room}' was deleted by sole member '{sender}'")
+                    resp = {"type": "room_deleted", "room": current_room, "status": "ok", "text": "اتاق با موفقیت پاکسازی و حذف شد."}
+                    apply_anti_dpi_padding(resp)
+                    writer.write(encode_frame(json.dumps(resp, ensure_ascii=False)))
+                    await writer.drain()
+                    info["room"] = None
+                    info["authenticated"] = False
+                    continue
+
                 # Leave room request
                 if msg_type == "leave":
                     info = client_info.get(writer)
@@ -1405,7 +1569,15 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         now = time.time()
                         if r in rooms:
                             rooms[r]["clients"].discard(writer)
-                            if rooms[r]["clients"]:
+                            for w in list(rooms[r].get("clients", set())):
+                                if w.is_closing():
+                                    rooms[r]["clients"].discard(w)
+                            http_m = rooms[r].get("http_members", {})
+                            for u, inf in list(http_m.items()):
+                                if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                                    http_m.pop(u, None)
+
+                            if len(rooms[r]["clients"]) > 0 or len(http_m) > 0:
                                 leave_msg = json.dumps({
                                     "type": "peer_offline",
                                     "room": info.get("room_display", r),
@@ -1430,13 +1602,22 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             s = info.get("nickname", "کاربر")
             if r in rooms:
                 rooms[r]["clients"].discard(writer)
-                if rooms[r]["clients"]:
+                for w in list(rooms[r].get("clients", set())):
+                    if w.is_closing():
+                        rooms[r]["clients"].discard(w)
+                now = time.time()
+                http_m = rooms[r].get("http_members", {})
+                for u, inf in list(http_m.items()):
+                    if (now - inf.get("last_ping", 0)) >= PRESENCE_TIMEOUT:
+                        http_m.pop(u, None)
+
+                if len(rooms[r]["clients"]) > 0 or len(http_m) > 0:
                     leave_msg = json.dumps({
                         "type": "peer_offline",
                         "room": info.get("room_display", r),
                         "user": s,
                         "text": f"«{s}» از گفتگو خارج شد.",
-                        "ts": time.time()
+                        "ts": now
                     }, ensure_ascii=False)
                     asyncio.create_task(broadcast_room(r, leave_msg))
                 else:
@@ -1566,12 +1747,21 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
             <line x1="21" y1="12" x2="9" y2="12"></line>
           </svg>
         </button>
+
+        <button id="btnDeleteRoom" class="icon-btn btn-danger-icon hidden" title="پاک کردن کامل اتاق" type="button">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            <line x1="10" y1="11" x2="10" y2="17"></line>
+            <line x1="14" y1="11" x2="14" y2="17"></line>
+          </svg>
+        </button>
       </div>
 
       <div class="header-center">
         <div class="app-title">
           <span>رخش چت</span>
-          <span class="version-tag">v1.5.0</span>
+          <span class="version-tag">v1.6.0</span>
           <span id="transportBadge" class="transport-pill ws" title="روش ارتباط و انتقال داده">⚡ وب‌سوکت</span>
           <span id="antiDpiBadge" class="anti-dpi-pill active" title="سپر ضد DPI: پدینگ تصادفی و فرکانس نامنظم پکت‌ها فعال است">🛡️ ضد DPI</span>
         </div>
@@ -1854,6 +2044,7 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
 
           <div class="modal-actions">
             <button id="btnDisconnectModal" class="btn-disconnect">قطع کامل و خروج از اتاق</button>
+            <button id="btnDeleteRoomModal" class="btn-delete-room-modal hidden" type="button">🗑️ پاک کردن و حذف کامل اتاق</button>
           </div>
         </div>
       </div>
@@ -2145,6 +2336,52 @@ body {
 
 #btnNotification.muted-notif:hover {
   opacity: 1;
+}
+
+.btn-danger-icon {
+  color: #f87171;
+}
+
+.btn-danger-icon:hover:not(:disabled):not(.disabled) {
+  background: rgba(239, 68, 68, 0.18);
+  color: #ef4444;
+}
+
+.icon-btn.disabled,
+.icon-btn:disabled {
+  opacity: 0.3 !important;
+  cursor: not-allowed !important;
+  pointer-events: auto !important;
+}
+
+.btn-delete-room-modal {
+  width: 100%;
+  margin-top: 8px;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+.btn-delete-room-modal:hover:not(:disabled):not(.disabled) {
+  background: rgba(239, 68, 68, 0.35);
+  border-color: #ef4444;
+  color: #fff;
+}
+
+.btn-delete-room-modal.disabled,
+.btn-delete-room-modal:disabled {
+  opacity: 0.4 !important;
+  cursor: not-allowed !important;
+  border-color: rgba(239, 68, 68, 0.2) !important;
+  color: #888 !important;
+  background: rgba(255, 255, 255, 0.05) !important;
 }
 
 /* Room Authentication Gate */
@@ -2914,6 +3151,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const antiDpiBadge = document.getElementById("antiDpiBadge");
   const btnSettings = document.getElementById("btnSettings");
   const btnLeaveRoom = document.getElementById("btnLeaveRoom");
+  const btnDeleteRoom = document.getElementById("btnDeleteRoom");
   const btnNotification = document.getElementById("btnNotification");
   const btnClear = document.getElementById("btnClear");
   const btnCancelReconnectHeader = document.getElementById("btnCancelReconnectHeader");
@@ -2964,6 +3202,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const btnTestNotif = document.getElementById("btnTestNotif");
   const btnMinimizeApp = document.getElementById("btnMinimizeApp");
   const btnDisconnectModal = document.getElementById("btnDisconnectModal");
+  const btnDeleteRoomModal = document.getElementById("btnDeleteRoomModal");
 
   // Client Session Unique ID (persisted across refreshes in sessionStorage)
   let clientId = "";
@@ -3506,10 +3745,42 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   }
 
   // ==========================================================================
-  // Peer Presence & 2-Second Ping Indicator
+  // Peer Presence & Live Ping Indicator (Resilient 7s Threshold)
   // ==========================================================================
+  const PRESENCE_TIMEOUT_MS = 7000;
+
   function cssEscape(str) {
     return encodeURIComponent(str).replace(/%/g, "_");
+  }
+
+  function isOnlyMemberInRoom() {
+    if (!state.isAuthenticated) return false;
+    let otherOnlineCount = 0;
+    peers.forEach((data, user) => {
+      if (user !== state.nickname && data.isOnline) {
+        otherOnlineCount++;
+      }
+    });
+    return otherOnlineCount === 0;
+  }
+
+  function updateDeleteRoomButtonState() {
+    const isOnly = isOnlyMemberInRoom();
+    const title = isOnly
+      ? "پاک کردن کامل اتاق (شما تنها عضو حاضر هستید)"
+      : "امکان حذف اتاق وجود ندارد (کاربران دیگری در اتاق حضور دارند)";
+
+    [btnDeleteRoom, btnDeleteRoomModal].forEach((btn) => {
+      if (!btn) return;
+      btn.disabled = !isOnly;
+      if (isOnly) {
+        btn.classList.remove("disabled");
+        btn.title = title;
+      } else {
+        btn.classList.add("disabled");
+        btn.title = title;
+      }
+    });
   }
 
   function renderRoomMembers() {
@@ -3529,16 +3800,18 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       chip.className = "member-chip";
       chip.id = `chip-${cssEscape(user)}`;
       const dotClass = data.isOnline ? "online" : "offline";
-      const title = data.isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+      const title = data.isOnline ? "آنلاین (متصل و فعال)" : "قطع ارتباط (عدم دریافت پکت)";
       chip.title = `${user}: ${title}`;
       chip.innerHTML = `<span class="peer-status-dot ${dotClass}" title="${title}"></span> <span>${escapeHtml(user)}</span>`;
       membersList.appendChild(chip);
     });
+
+    updateDeleteRoomButtonState();
   }
 
   function updatePeerStatusIndicators(user, isOnline) {
     const dotClass = isOnline ? "online" : "offline";
-    const title = isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+    const title = isOnline ? "آنلاین (متصل و فعال)" : "قطع ارتباط (عدم دریافت پکت)";
 
     // Update chip in top members bar
     const chip = document.getElementById(`chip-${cssEscape(user)}`);
@@ -3557,13 +3830,15 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       dot.className = `peer-status-dot ${dotClass}`;
       dot.title = title;
     });
+
+    updateDeleteRoomButtonState();
   }
 
   function initPeerPresence() {
     if (peerPingInterval) clearInterval(peerPingInterval);
     if (peerFreshnessChecker) clearInterval(peerFreshnessChecker);
 
-    // 1. Ping Sender: Send heartbeat ping every 1000ms
+    // 1. Ping Sender: Send heartbeat ping every 1500ms
     peerPingInterval = setInterval(() => {
       if (!state.isAuthenticated) return;
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -3577,22 +3852,22 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       } else if (state.transportMode === "http") {
         sendHttpPeerPing();
       }
-    }, 1000);
+    }, 1500);
 
-    // 2. Freshness Checker: every 400ms, if now - lastPing > 2000ms -> offline (RED LIGHT)!
+    // 2. Freshness Checker: every 500ms, if now - lastPing > PRESENCE_TIMEOUT_MS -> offline (RED LIGHT)!
     peerFreshnessChecker = setInterval(() => {
       if (!state.isAuthenticated) return;
       const now = Date.now();
       peers.forEach((data, user) => {
         if (user === state.nickname) return;
         const diff = now - (data.lastPing || 0);
-        const isOnline = diff <= 2000; // 2 seconds limit!
+        const isOnline = diff <= PRESENCE_TIMEOUT_MS;
         if (data.isOnline !== isOnline) {
           data.isOnline = isOnline;
           updatePeerStatusIndicators(user, isOnline);
         }
       });
-    }, 400);
+    }, 500);
   }
 
   async function sendHttpPeerPing() {
@@ -3811,9 +4086,12 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     roomGate.classList.add("hidden");
     chatView.classList.remove("hidden");
     btnLeaveRoom.classList.remove("hidden");
+    if (btnDeleteRoom) btnDeleteRoom.classList.remove("hidden");
+    if (btnDeleteRoomModal) btnDeleteRoomModal.classList.remove("hidden");
     btnClear.classList.remove("hidden");
     roomStatusBadge.classList.remove("hidden");
     currentRoomDisplay.textContent = roomName;
+    updateDeleteRoomButtonState();
     messageInput.focus();
 
     // Check browser notification permission
@@ -3829,6 +4107,8 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     roomGate.classList.remove("hidden");
     chatView.classList.add("hidden");
     btnLeaveRoom.classList.add("hidden");
+    if (btnDeleteRoom) btnDeleteRoom.classList.add("hidden");
+    if (btnDeleteRoomModal) btnDeleteRoomModal.classList.add("hidden");
     btnClear.classList.add("hidden");
     roomStatusBadge.classList.add("hidden");
     updateStatus("disconnected", "اتاقی متصل نیست");
@@ -3951,7 +4231,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       ws = null;
     }
 
-    // Set a 4-second timeout: If WebSocket fails to establish handshake,
+    // Set a 2.5-second timeout: If WebSocket fails to establish handshake,
     // immediately failover to HTTP Safe Tunnel!
     wsHandshakeTimer = setTimeout(() => {
       if (isConnecting && (!ws || ws.readyState !== WebSocket.OPEN)) {
@@ -3962,7 +4242,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
         ws = null;
         activateHttpTunnelFallback();
       }
-    }, 4000);
+    }, 2500);
 
     try {
       ws = new WebSocket(state.serverUrl);
@@ -4141,6 +4421,15 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
         return;
       }
 
+      // Room Deleted Confirmation
+      if (parsed.type === "room_deleted") {
+        nativeToast(parsed.text || "اتاق با موفقیت پاکسازی شد.");
+        leaveRoom();
+        gateRoomPassword.value = "";
+        gateRoomPassword.focus();
+        return;
+      }
+
       // Incoming Chat Messages
       if (parsed.type === "chat") {
         processIncomingChatMessage(parsed);
@@ -4159,7 +4448,10 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
       clearInterval(decoyChaffTimer);
 
-      if (state.isAuthenticated) {
+      if (isConnecting && !state.isAuthenticated) {
+        clearTimeout(wsHandshakeTimer);
+        activateHttpTunnelFallback();
+      } else if (state.isAuthenticated) {
         // If disconnected after being authenticated, try HTTP fallback immediately
         console.warn("WebSocket disconnected by firewall or network drop. Falling back to HTTP Safe Tunnel...");
         activateHttpTunnelFallback();
@@ -4222,6 +4514,19 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       enterChatView(state.room);
       initPeerPresence();
 
+      // Load initial room members & ping presence from HTTP response
+      peers.clear();
+      if (Array.isArray(joinData.members)) {
+        for (const m of joinData.members) {
+          if (m.user && m.user !== state.nickname) {
+            const lp = m.last_ping ? Date.now() - Math.max(0, (Date.now() - m.last_ping * 1000)) : Date.now();
+            peers.set(m.user, { lastPing: lp, isOnline: m.online !== false });
+          }
+        }
+      }
+      renderRoomMembers();
+      updateDeleteRoomButtonState();
+
       if (!state.seenMessageIds.has("sys_http_welcome")) {
         state.seenMessageIds.add("sys_http_welcome");
         appendMessage({
@@ -4261,7 +4566,31 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
           if (data.status === "ok") {
             if (Array.isArray(data.messages)) {
               for (const msg of data.messages) {
-                processIncomingChatMessage(msg);
+                if (msg.type === "peer_join") {
+                  if (msg.user && msg.user !== state.nickname) {
+                    peers.set(msg.user, { lastPing: Date.now(), isOnline: true });
+                    renderRoomMembers();
+                    updatePeerStatusIndicators(msg.user, true);
+                    updateDeleteRoomButtonState();
+                  }
+                  if (msg.text && !state.seenMessageIds.has(msg.id)) {
+                    state.seenMessageIds.add(msg.id);
+                    appendMessage({ type: "system", text: msg.text, isEncrypted: false });
+                  }
+                } else if (msg.type === "peer_offline") {
+                  if (msg.user && peers.has(msg.user)) {
+                    peers.get(msg.user).isOnline = false;
+                    renderRoomMembers();
+                    updatePeerStatusIndicators(msg.user, false);
+                    updateDeleteRoomButtonState();
+                  }
+                  if (msg.text && !state.seenMessageIds.has(msg.id)) {
+                    state.seenMessageIds.add(msg.id);
+                    appendMessage({ type: "system", text: msg.text, isEncrypted: false });
+                  }
+                } else {
+                  processIncomingChatMessage(msg);
+                }
               }
             }
             if (Array.isArray(data.receipts)) {
@@ -4279,6 +4608,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
                 }
               }
               renderRoomMembers();
+              updateDeleteRoomButtonState();
             }
             if (data.server_time && data.server_time > state.lastSyncTimestamp) {
               state.lastSyncTimestamp = data.server_time;
@@ -4329,6 +4659,21 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     }
 
     const isMe = msg.sender === state.nickname;
+
+    // Immediate peer presence detection: any message proves peer is alive and ONLINE right now!
+    if (!isMe && msg.sender) {
+      const now = Date.now();
+      const existing = peers.get(msg.sender);
+      if (!existing) {
+        peers.set(msg.sender, { lastPing: now, isOnline: true });
+        renderRoomMembers();
+      } else {
+        existing.lastPing = now;
+        existing.isOnline = true;
+      }
+      updatePeerStatusIndicators(msg.sender, true);
+      updateDeleteRoomButtonState();
+    }
 
     // Decrypt if encrypted
     let displayText = msg.ciphertext || msg.text || "";
@@ -4512,6 +4857,72 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     closeSettings();
     leaveRoom();
   });
+
+  // Delete room button (enabled only when sole member)
+  async function deleteRoom() {
+    if (!state.isAuthenticated || !state.room) return;
+    if (!isOnlyMemberInRoom()) {
+      nativeToast("امکان پاک کردن اتاق وجود ندارد؛ کاربران دیگری در اتاق حضور دارند.");
+      return;
+    }
+
+    const ok = confirm(
+      "آیا مطمئن هستید که می‌خواهید این اتاق را به طور کامل پاک کنید؟\n\n" +
+      "با این کار، اتاق از حافظه سرور حذف شده و هر فرد جدیدی می‌تواند اتاق را با رمز عبور جدید بسازد."
+    );
+    if (!ok) return;
+
+    const roomToDelete = state.room;
+    const pw = state.password;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(wrapAntiDpi({
+          type: "delete_room",
+          room: roomToDelete,
+          password: pw,
+          sender: state.nickname,
+        })));
+      } catch (e) {}
+    } else {
+      try {
+        const httpBase = getHttpBaseUrl(state.serverUrl);
+        const res = await fetch(`${httpBase}/api/delete_room`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(wrapAntiDpi({
+            room: roomToDelete,
+            password: pw,
+            sender: state.nickname,
+          })),
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          nativeToast(errData.text || "خطا در پاک کردن اتاق");
+          return;
+        }
+      } catch (e) {
+        nativeToast("خطا در ارسال درخواست پاک کردن اتاق");
+        return;
+      }
+    }
+
+    leaveRoom();
+    gateRoomPassword.value = "";
+    gateRoomName.value = roomToDelete;
+    gateRoomPassword.focus();
+    nativeToast(`اتاق «${roomToDelete}» به طور کامل پاک شد. اکنون می‌توانید آن را با رمز جدید بسازید.`);
+  }
+
+  if (btnDeleteRoom) {
+    btnDeleteRoom.addEventListener("click", deleteRoom);
+  }
+  if (btnDeleteRoomModal) {
+    btnDeleteRoomModal.addEventListener("click", () => {
+      closeSettings();
+      deleteRoom();
+    });
+  }
 
   // Clear messages button
   btnClear.addEventListener("click", () => {

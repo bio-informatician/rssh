@@ -18,6 +18,7 @@
   const antiDpiBadge = document.getElementById("antiDpiBadge");
   const btnSettings = document.getElementById("btnSettings");
   const btnLeaveRoom = document.getElementById("btnLeaveRoom");
+  const btnDeleteRoom = document.getElementById("btnDeleteRoom");
   const btnNotification = document.getElementById("btnNotification");
   const btnClear = document.getElementById("btnClear");
   const btnCancelReconnectHeader = document.getElementById("btnCancelReconnectHeader");
@@ -68,6 +69,7 @@
   const btnTestNotif = document.getElementById("btnTestNotif");
   const btnMinimizeApp = document.getElementById("btnMinimizeApp");
   const btnDisconnectModal = document.getElementById("btnDisconnectModal");
+  const btnDeleteRoomModal = document.getElementById("btnDeleteRoomModal");
 
   // Client Session Unique ID (persisted across refreshes in sessionStorage)
   let clientId = "";
@@ -610,10 +612,42 @@
   }
 
   // ==========================================================================
-  // Peer Presence & 2-Second Ping Indicator
+  // Peer Presence & Live Ping Indicator (Resilient 7s Threshold)
   // ==========================================================================
+  const PRESENCE_TIMEOUT_MS = 7000;
+
   function cssEscape(str) {
     return encodeURIComponent(str).replace(/%/g, "_");
+  }
+
+  function isOnlyMemberInRoom() {
+    if (!state.isAuthenticated) return false;
+    let otherOnlineCount = 0;
+    peers.forEach((data, user) => {
+      if (user !== state.nickname && data.isOnline) {
+        otherOnlineCount++;
+      }
+    });
+    return otherOnlineCount === 0;
+  }
+
+  function updateDeleteRoomButtonState() {
+    const isOnly = isOnlyMemberInRoom();
+    const title = isOnly
+      ? "پاک کردن کامل اتاق (شما تنها عضو حاضر هستید)"
+      : "امکان حذف اتاق وجود ندارد (کاربران دیگری در اتاق حضور دارند)";
+
+    [btnDeleteRoom, btnDeleteRoomModal].forEach((btn) => {
+      if (!btn) return;
+      btn.disabled = !isOnly;
+      if (isOnly) {
+        btn.classList.remove("disabled");
+        btn.title = title;
+      } else {
+        btn.classList.add("disabled");
+        btn.title = title;
+      }
+    });
   }
 
   function renderRoomMembers() {
@@ -633,16 +667,18 @@
       chip.className = "member-chip";
       chip.id = `chip-${cssEscape(user)}`;
       const dotClass = data.isOnline ? "online" : "offline";
-      const title = data.isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+      const title = data.isOnline ? "آنلاین (متصل و فعال)" : "قطع ارتباط (عدم دریافت پکت)";
       chip.title = `${user}: ${title}`;
       chip.innerHTML = `<span class="peer-status-dot ${dotClass}" title="${title}"></span> <span>${escapeHtml(user)}</span>`;
       membersList.appendChild(chip);
     });
+
+    updateDeleteRoomButtonState();
   }
 
   function updatePeerStatusIndicators(user, isOnline) {
     const dotClass = isOnline ? "online" : "offline";
-    const title = isOnline ? "آنلاین (پینگ فعال زیر ۲ ثانیه)" : "قطع ارتباط (بیش از ۲ ثانیه بدون پینگ)";
+    const title = isOnline ? "آنلاین (متصل و فعال)" : "قطع ارتباط (عدم دریافت پکت)";
 
     // Update chip in top members bar
     const chip = document.getElementById(`chip-${cssEscape(user)}`);
@@ -661,13 +697,15 @@
       dot.className = `peer-status-dot ${dotClass}`;
       dot.title = title;
     });
+
+    updateDeleteRoomButtonState();
   }
 
   function initPeerPresence() {
     if (peerPingInterval) clearInterval(peerPingInterval);
     if (peerFreshnessChecker) clearInterval(peerFreshnessChecker);
 
-    // 1. Ping Sender: Send heartbeat ping every 1000ms
+    // 1. Ping Sender: Send heartbeat ping every 1500ms
     peerPingInterval = setInterval(() => {
       if (!state.isAuthenticated) return;
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -681,22 +719,22 @@
       } else if (state.transportMode === "http") {
         sendHttpPeerPing();
       }
-    }, 1000);
+    }, 1500);
 
-    // 2. Freshness Checker: every 400ms, if now - lastPing > 2000ms -> offline (RED LIGHT)!
+    // 2. Freshness Checker: every 500ms, if now - lastPing > PRESENCE_TIMEOUT_MS -> offline (RED LIGHT)!
     peerFreshnessChecker = setInterval(() => {
       if (!state.isAuthenticated) return;
       const now = Date.now();
       peers.forEach((data, user) => {
         if (user === state.nickname) return;
         const diff = now - (data.lastPing || 0);
-        const isOnline = diff <= 2000; // 2 seconds limit!
+        const isOnline = diff <= PRESENCE_TIMEOUT_MS;
         if (data.isOnline !== isOnline) {
           data.isOnline = isOnline;
           updatePeerStatusIndicators(user, isOnline);
         }
       });
-    }, 400);
+    }, 500);
   }
 
   async function sendHttpPeerPing() {
@@ -915,9 +953,12 @@
     roomGate.classList.add("hidden");
     chatView.classList.remove("hidden");
     btnLeaveRoom.classList.remove("hidden");
+    if (btnDeleteRoom) btnDeleteRoom.classList.remove("hidden");
+    if (btnDeleteRoomModal) btnDeleteRoomModal.classList.remove("hidden");
     btnClear.classList.remove("hidden");
     roomStatusBadge.classList.remove("hidden");
     currentRoomDisplay.textContent = roomName;
+    updateDeleteRoomButtonState();
     messageInput.focus();
 
     // Check browser notification permission
@@ -933,6 +974,8 @@
     roomGate.classList.remove("hidden");
     chatView.classList.add("hidden");
     btnLeaveRoom.classList.add("hidden");
+    if (btnDeleteRoom) btnDeleteRoom.classList.add("hidden");
+    if (btnDeleteRoomModal) btnDeleteRoomModal.classList.add("hidden");
     btnClear.classList.add("hidden");
     roomStatusBadge.classList.add("hidden");
     updateStatus("disconnected", "اتاقی متصل نیست");
@@ -1055,7 +1098,7 @@
       ws = null;
     }
 
-    // Set a 4-second timeout: If WebSocket fails to establish handshake,
+    // Set a 2.5-second timeout: If WebSocket fails to establish handshake,
     // immediately failover to HTTP Safe Tunnel!
     wsHandshakeTimer = setTimeout(() => {
       if (isConnecting && (!ws || ws.readyState !== WebSocket.OPEN)) {
@@ -1066,7 +1109,7 @@
         ws = null;
         activateHttpTunnelFallback();
       }
-    }, 4000);
+    }, 2500);
 
     try {
       ws = new WebSocket(state.serverUrl);
@@ -1245,6 +1288,15 @@
         return;
       }
 
+      // Room Deleted Confirmation
+      if (parsed.type === "room_deleted") {
+        nativeToast(parsed.text || "اتاق با موفقیت پاکسازی شد.");
+        leaveRoom();
+        gateRoomPassword.value = "";
+        gateRoomPassword.focus();
+        return;
+      }
+
       // Incoming Chat Messages
       if (parsed.type === "chat") {
         processIncomingChatMessage(parsed);
@@ -1263,7 +1315,10 @@
       if (jitteredPingTimer) clearTimeout(jitteredPingTimer);
       clearInterval(decoyChaffTimer);
 
-      if (state.isAuthenticated) {
+      if (isConnecting && !state.isAuthenticated) {
+        clearTimeout(wsHandshakeTimer);
+        activateHttpTunnelFallback();
+      } else if (state.isAuthenticated) {
         // If disconnected after being authenticated, try HTTP fallback immediately
         console.warn("WebSocket disconnected by firewall or network drop. Falling back to HTTP Safe Tunnel...");
         activateHttpTunnelFallback();
@@ -1326,6 +1381,19 @@
       enterChatView(state.room);
       initPeerPresence();
 
+      // Load initial room members & ping presence from HTTP response
+      peers.clear();
+      if (Array.isArray(joinData.members)) {
+        for (const m of joinData.members) {
+          if (m.user && m.user !== state.nickname) {
+            const lp = m.last_ping ? Date.now() - Math.max(0, (Date.now() - m.last_ping * 1000)) : Date.now();
+            peers.set(m.user, { lastPing: lp, isOnline: m.online !== false });
+          }
+        }
+      }
+      renderRoomMembers();
+      updateDeleteRoomButtonState();
+
       if (!state.seenMessageIds.has("sys_http_welcome")) {
         state.seenMessageIds.add("sys_http_welcome");
         appendMessage({
@@ -1365,7 +1433,31 @@
           if (data.status === "ok") {
             if (Array.isArray(data.messages)) {
               for (const msg of data.messages) {
-                processIncomingChatMessage(msg);
+                if (msg.type === "peer_join") {
+                  if (msg.user && msg.user !== state.nickname) {
+                    peers.set(msg.user, { lastPing: Date.now(), isOnline: true });
+                    renderRoomMembers();
+                    updatePeerStatusIndicators(msg.user, true);
+                    updateDeleteRoomButtonState();
+                  }
+                  if (msg.text && !state.seenMessageIds.has(msg.id)) {
+                    state.seenMessageIds.add(msg.id);
+                    appendMessage({ type: "system", text: msg.text, isEncrypted: false });
+                  }
+                } else if (msg.type === "peer_offline") {
+                  if (msg.user && peers.has(msg.user)) {
+                    peers.get(msg.user).isOnline = false;
+                    renderRoomMembers();
+                    updatePeerStatusIndicators(msg.user, false);
+                    updateDeleteRoomButtonState();
+                  }
+                  if (msg.text && !state.seenMessageIds.has(msg.id)) {
+                    state.seenMessageIds.add(msg.id);
+                    appendMessage({ type: "system", text: msg.text, isEncrypted: false });
+                  }
+                } else {
+                  processIncomingChatMessage(msg);
+                }
               }
             }
             if (Array.isArray(data.receipts)) {
@@ -1383,6 +1475,7 @@
                 }
               }
               renderRoomMembers();
+              updateDeleteRoomButtonState();
             }
             if (data.server_time && data.server_time > state.lastSyncTimestamp) {
               state.lastSyncTimestamp = data.server_time;
@@ -1433,6 +1526,21 @@
     }
 
     const isMe = msg.sender === state.nickname;
+
+    // Immediate peer presence detection: any message proves peer is alive and ONLINE right now!
+    if (!isMe && msg.sender) {
+      const now = Date.now();
+      const existing = peers.get(msg.sender);
+      if (!existing) {
+        peers.set(msg.sender, { lastPing: now, isOnline: true });
+        renderRoomMembers();
+      } else {
+        existing.lastPing = now;
+        existing.isOnline = true;
+      }
+      updatePeerStatusIndicators(msg.sender, true);
+      updateDeleteRoomButtonState();
+    }
 
     // Decrypt if encrypted
     let displayText = msg.ciphertext || msg.text || "";
@@ -1616,6 +1724,72 @@
     closeSettings();
     leaveRoom();
   });
+
+  // Delete room button (enabled only when sole member)
+  async function deleteRoom() {
+    if (!state.isAuthenticated || !state.room) return;
+    if (!isOnlyMemberInRoom()) {
+      nativeToast("امکان پاک کردن اتاق وجود ندارد؛ کاربران دیگری در اتاق حضور دارند.");
+      return;
+    }
+
+    const ok = confirm(
+      "آیا مطمئن هستید که می‌خواهید این اتاق را به طور کامل پاک کنید؟\n\n" +
+      "با این کار، اتاق از حافظه سرور حذف شده و هر فرد جدیدی می‌تواند اتاق را با رمز عبور جدید بسازد."
+    );
+    if (!ok) return;
+
+    const roomToDelete = state.room;
+    const pw = state.password;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(wrapAntiDpi({
+          type: "delete_room",
+          room: roomToDelete,
+          password: pw,
+          sender: state.nickname,
+        })));
+      } catch (e) {}
+    } else {
+      try {
+        const httpBase = getHttpBaseUrl(state.serverUrl);
+        const res = await fetch(`${httpBase}/api/delete_room`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(wrapAntiDpi({
+            room: roomToDelete,
+            password: pw,
+            sender: state.nickname,
+          })),
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          nativeToast(errData.text || "خطا در پاک کردن اتاق");
+          return;
+        }
+      } catch (e) {
+        nativeToast("خطا در ارسال درخواست پاک کردن اتاق");
+        return;
+      }
+    }
+
+    leaveRoom();
+    gateRoomPassword.value = "";
+    gateRoomName.value = roomToDelete;
+    gateRoomPassword.focus();
+    nativeToast(`اتاق «${roomToDelete}» به طور کامل پاک شد. اکنون می‌توانید آن را با رمز جدید بسازید.`);
+  }
+
+  if (btnDeleteRoom) {
+    btnDeleteRoom.addEventListener("click", deleteRoom);
+  }
+  if (btnDeleteRoomModal) {
+    btnDeleteRoomModal.addEventListener("click", () => {
+      closeSettings();
+      deleteRoom();
+    });
+  }
 
   // Clear messages button
   btnClear.addEventListener("click", () => {
