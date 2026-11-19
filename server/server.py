@@ -430,6 +430,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     raw_room = str(payload.get("room") or "").strip()
                     password = str(payload.get("password") or "").strip()
                     sender = str(payload.get("sender") or "").strip() or "کاربر"
+                    client_id = str(payload.get("clientId") or "").strip()
                     room_id = raw_room.lower()
 
                     if not raw_room or not password:
@@ -451,7 +452,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 "creator": sender,
                                 "clients": set(),
                                 "history": [],
-                                "http_members": {sender: {"last_ping": now}}
+                                "http_members": {sender: {"last_ping": now, "client_id": client_id}}
                             }
                             print(f"🔒 [HTTP Room Created] '{room_id}' by '{sender}' from {peername[0]}")
                         else:
@@ -466,8 +467,73 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                                 await writer.drain()
                                 writer.close()
                                 return
+
+                            # Check for duplicate nickname collision in room
+                            norm_sender = sender.lower()
+                            conflict_found = False
+                            stale_writers = set()
+
+                            for w in list(rooms[room_id]["clients"]):
+                                if w.is_closing():
+                                    stale_writers.add(w)
+                                    continue
+                                winf = client_info.get(w)
+                                if not winf or not winf.get("authenticated"):
+                                    continue
+                                existing_nick = str(winf.get("nickname") or "").strip()
+                                if existing_nick.lower() == norm_sender:
+                                    existing_client_id = str(winf.get("client_id") or "").strip()
+                                    if client_id and existing_client_id and client_id == existing_client_id:
+                                        stale_writers.add(w)
+                                        continue
+                                    try:
+                                        w.write(encode_frame(b"", opcode=0x9))
+                                        await asyncio.wait_for(w.drain(), timeout=0.2)
+                                        conflict_found = True
+                                        break
+                                    except Exception:
+                                        stale_writers.add(w)
+                                        continue
+
+                            for sw in stale_writers:
+                                rooms[room_id]["clients"].discard(sw)
+                                clients.discard(sw)
+                                client_info.pop(sw, None)
+                                try:
+                                    sw.close()
+                                except Exception:
+                                    pass
+
+                            if not conflict_found:
+                                http_m = rooms[room_id].get("http_members", {})
+                                for u, uinf in list(http_m.items()):
+                                    if (now - uinf.get("last_ping", 0)) < 20.0:
+                                        if u.strip().lower() == norm_sender:
+                                            existing_client_id = str(uinf.get("client_id") or "").strip()
+                                            if client_id and existing_client_id and client_id == existing_client_id:
+                                                continue
+                                            conflict_found = True
+                                            break
+                                    else:
+                                        http_m.pop(u, None)
+
+                            if conflict_found:
+                                print(f"⛔ [HTTP Auth Failed] Duplicate nickname '{sender}' in room '{room_id}'")
+                                resp_dict = {
+                                    "status": "error",
+                                    "text": f"کاربری با نام «{sender}» در حال حاضر در این اتاق حضور دارد. لطفاً نام دیگری انتخاب کنید."
+                                }
+                                apply_anti_dpi_padding(resp_dict)
+                                writer.write(make_http_json_response(409, json.dumps(resp_dict, ensure_ascii=False)))
+                                await writer.drain()
+                                writer.close()
+                                return
+
                             rooms[room_id]["last_http_activity"] = now
-                            rooms[room_id].setdefault("http_members", {})[sender] = {"last_ping": now}
+                            rooms[room_id].setdefault("http_members", {})[sender] = {
+                                "last_ping": now,
+                                "client_id": client_id
+                            }
 
                         resp_dict = {
                             "status": "ok",
@@ -639,6 +705,29 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             await writer.drain()
                             writer.close()
                             return
+
+                # REST API 2.7: /api/leave (Explicit leave for HTTP client)
+                elif path == "/api/leave":
+                    raw_room = str(payload.get("room") or "").strip()
+                    sender = str(payload.get("sender") or "").strip()
+                    room_id = raw_room.lower()
+                    if room_id in rooms:
+                        http_m = rooms[room_id].get("http_members", {})
+                        http_m.pop(sender, None)
+                        await broadcast_room(room_id, {
+                            "type": "peer_offline",
+                            "room": raw_room,
+                            "user": sender,
+                            "text": f"«{sender}» از گفتگو خارج شد.",
+                            "ts": time.time()
+                        })
+                        cleanup_empty_room(room_id)
+                    resp_dict = {"status": "ok"}
+                    apply_anti_dpi_padding(resp_dict)
+                    writer.write(make_http_json_response(200, json.dumps(resp_dict, ensure_ascii=False)))
+                    await writer.drain()
+                    writer.close()
+                    return
                 else:
                     writer.write(b"HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n")
                     await writer.drain()
@@ -853,6 +942,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     raw_room = str(payload.get("room") or "").strip()
                     password = str(payload.get("password") or "").strip()
                     sender = str(payload.get("sender") or "").strip() or "کاربر"
+                    client_id = str(payload.get("clientId") or "").strip()
 
                     if not raw_room:
                         err = {"type": "auth_error", "text": "نام اتاق نمی‌تواند خالی باشد."}
@@ -900,6 +990,72 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             await writer.drain()
                             continue
 
+                        # Check for duplicate nickname collision in room
+                        norm_sender = sender.lower()
+                        conflict_found = False
+                        stale_writers = set()
+
+                        for w in list(rooms[room_id]["clients"]):
+                            if w is writer:
+                                continue
+                            if w.is_closing():
+                                stale_writers.add(w)
+                                continue
+                            winf = client_info.get(w)
+                            if not winf or not winf.get("authenticated"):
+                                continue
+                            existing_nick = str(winf.get("nickname") or "").strip()
+                            if existing_nick.lower() == norm_sender:
+                                existing_client_id = str(winf.get("client_id") or "").strip()
+                                if client_id and existing_client_id and client_id == existing_client_id:
+                                    # Reconnect from same client session: evict old socket
+                                    stale_writers.add(w)
+                                    continue
+                                try:
+                                    w.write(encode_frame(b"", opcode=0x9))
+                                    await asyncio.wait_for(w.drain(), timeout=0.2)
+                                    conflict_found = True
+                                    break
+                                except Exception:
+                                    stale_writers.add(w)
+                                    continue
+
+                        for sw in stale_writers:
+                            rooms[room_id]["clients"].discard(sw)
+                            clients.discard(sw)
+                            client_info.pop(sw, None)
+                            try:
+                                sw.close()
+                            except Exception:
+                                pass
+
+                        if not conflict_found:
+                            # Check active HTTP members
+                            now = time.time()
+                            http_m = rooms[room_id].get("http_members", {})
+                            for u, uinf in list(http_m.items()):
+                                if (now - uinf.get("last_ping", 0)) < 20.0:
+                                    if u.strip().lower() == norm_sender:
+                                        existing_client_id = str(uinf.get("client_id") or "").strip()
+                                        if client_id and existing_client_id and client_id == existing_client_id:
+                                            continue
+                                        conflict_found = True
+                                        break
+                                else:
+                                    http_m.pop(u, None)
+
+                        if conflict_found:
+                            print(f"⛔ [WS Auth Failed] Duplicate nickname '{sender}' in room '{room_id}'")
+                            err = {
+                                "type": "auth_error",
+                                "room": raw_room,
+                                "text": f"کاربری با نام «{sender}» در حال حاضر در این اتاق حضور دارد. لطفاً نام دیگری انتخاب کنید."
+                            }
+                            apply_anti_dpi_padding(err)
+                            writer.write(encode_frame(json.dumps(err, ensure_ascii=False)))
+                            await writer.drain()
+                            continue
+
                     # Remove from old room if already joined
                     old_room = client_info[writer].get("room")
                     if old_room and old_room in rooms:
@@ -914,6 +1070,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         "room": room_id,
                         "room_display": raw_room,
                         "nickname": sender,
+                        "client_id": client_id,
                         "authenticated": True,
                         "last_ping": now,
                     }

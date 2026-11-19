@@ -264,6 +264,19 @@ body {
   transform: scale(0.95);
 }
 
+#btnNotification.active-notif {
+  color: var(--accent-glow, #818cf8);
+}
+
+#btnNotification.muted-notif {
+  color: var(--danger, #ef4444);
+  opacity: 0.8;
+}
+
+#btnNotification.muted-notif:hover {
+  opacity: 1;
+}
+
 /* Room Authentication Gate */
 .gate-container {
   flex: 1;

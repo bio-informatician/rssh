@@ -62,11 +62,42 @@
   const btnPresetDirect = document.getElementById("btnPresetDirect");
   const btnPresetCfTunnel = document.getElementById("btnPresetCfTunnel");
   const autoReconnectInput = document.getElementById("autoReconnect");
+  const notificationToggle = document.getElementById("notificationToggle");
   const vibrationToggle = document.getElementById("vibrationToggle");
   const keepCredentialsInput = document.getElementById("keepCredentials");
   const btnTestNotif = document.getElementById("btnTestNotif");
   const btnMinimizeApp = document.getElementById("btnMinimizeApp");
   const btnDisconnectModal = document.getElementById("btnDisconnectModal");
+
+  // Client Session Unique ID (persisted across refreshes in sessionStorage)
+  let clientId = "";
+  try {
+    clientId = sessionStorage.getItem("rssh_client_id") || "";
+    if (!clientId) {
+      clientId = "c_" + Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
+      sessionStorage.setItem("rssh_client_id", clientId);
+    }
+  } catch (e) {
+    clientId = "c_" + Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
+  }
+
+  // Notification Toggle Icons (Feather / Lucide Style)
+  const NOTIF_BELL_ON_SVG = `
+    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+    </svg>
+  `;
+
+  const NOTIF_BELL_OFF_SVG = `
+    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+      <path d="M18.63 13A17.89 17.89 0 0 1 18 8"></path>
+      <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"></path>
+      <path d="M18 8a6 6 0 0 0-9.33-5"></path>
+      <line x1="1" y1="1" x2="23" y2="23"></line>
+    </svg>
+  `;
 
   // Application State
   let ws = null;
@@ -101,6 +132,7 @@
     antiDpi: true,
     decoyChaff: true,
     autoReconnect: true,
+    notificationsEnabled: true,
     vibrationEnabled: true,
     keepCredentials: true,
     isAuthenticated: false,
@@ -129,8 +161,50 @@
   if (savedConfig.antiDpi !== undefined) state.antiDpi = savedConfig.antiDpi;
   if (savedConfig.decoyChaff !== undefined) state.decoyChaff = savedConfig.decoyChaff;
   if (savedConfig.autoReconnect !== undefined) state.autoReconnect = savedConfig.autoReconnect;
+  if (savedConfig.notificationsEnabled !== undefined) state.notificationsEnabled = savedConfig.notificationsEnabled;
   if (savedConfig.vibrationEnabled !== undefined) state.vibrationEnabled = savedConfig.vibrationEnabled;
   if (savedConfig.keepCredentials !== undefined) state.keepCredentials = savedConfig.keepCredentials;
+
+  function updateNotificationUI() {
+    if (state.notificationsEnabled) {
+      btnNotification.innerHTML = NOTIF_BELL_ON_SVG;
+      btnNotification.classList.remove("muted-notif");
+      btnNotification.classList.add("active-notif");
+      btnNotification.setAttribute("title", "اعلان‌ها روشن است (برای خاموش کردن کلیک کنید)");
+      if (notificationToggle) notificationToggle.checked = true;
+    } else {
+      btnNotification.innerHTML = NOTIF_BELL_OFF_SVG;
+      btnNotification.classList.remove("active-notif");
+      btnNotification.classList.add("muted-notif");
+      btnNotification.setAttribute("title", "اعلان‌ها خاموش است (برای روشن کردن کلیک کنید)");
+      if (notificationToggle) notificationToggle.checked = false;
+    }
+  }
+
+  function toggleNotifications() {
+    state.notificationsEnabled = !state.notificationsEnabled;
+    updateNotificationUI();
+    persistSettings();
+
+    if (state.notificationsEnabled) {
+      if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission().then((permission) => {
+          if (permission === "granted") {
+            notifBanner.classList.add("hidden");
+            nativeToast("اعلان‌ها فعال شد 🔔");
+            playAudioChime();
+          } else {
+            nativeToast("مجوز اعلان در مرورگر داده نشد");
+          }
+        });
+        return;
+      }
+      nativeToast("اعلان‌ها روشن شد 🔔");
+      playAudioChime();
+    } else {
+      nativeToast("اعلان‌ها و صدای پیام خاموش شد 🔕");
+    }
+  }
 
   // Initialize Form Values
   gateNickname.value = state.nickname || "کاربر";
@@ -142,8 +216,10 @@
   if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
   if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
   if (autoReconnectInput) autoReconnectInput.checked = state.autoReconnect;
+  if (notificationToggle) notificationToggle.checked = state.notificationsEnabled;
   if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
   if (keepCredentialsInput) keepCredentialsInput.checked = state.keepCredentials;
+  updateNotificationUI();
 
   // Save Settings Helper
   function persistSettings() {
@@ -154,6 +230,7 @@
       decoyChaff: state.decoyChaff,
       nickname: state.nickname,
       autoReconnect: state.autoReconnect,
+      notificationsEnabled: state.notificationsEnabled,
       vibrationEnabled: state.vibrationEnabled,
       keepCredentials: state.keepCredentials,
       room: state.keepCredentials ? state.room : "",
@@ -342,6 +419,10 @@
   function triggerBackgroundNotification(sender, messageText, roomName) {
     unreadCount++;
     document.title = `(${unreadCount}) پیام جدید | رخش چت`;
+
+    if (!state.notificationsEnabled) {
+      return;
+    }
 
     // 1. Android Native Foreground Service & Lock Screen Notification
     if (window.ChatNative && window.ChatNative.showNotification) {
@@ -840,7 +921,7 @@
     messageInput.focus();
 
     // Check browser notification permission
-    if ("Notification" in window && Notification.permission === "default") {
+    if (state.notificationsEnabled && "Notification" in window && Notification.permission === "default") {
       notifBanner.classList.remove("hidden");
     } else {
       notifBanner.classList.add("hidden");
@@ -1005,6 +1086,7 @@
         room: state.room,
         password: state.password,
         sender: state.nickname,
+        clientId: clientId,
         time: formatTime(),
       });
       try {
@@ -1071,13 +1153,21 @@
         return;
       }
 
-      // Authentication Error (Wrong Password or Access Denied)
+      // Authentication Error (Wrong Password, Duplicate Nickname, or Access Denied)
       if (parsed.type === "auth_error") {
         isConnecting = false;
         showReconnectBanner(false);
-        updateStatus("disconnected", "رمز نادرست");
-        showGateError(parsed.text || "رمز عبور اتاق نادرست است! دسترسی غیرمجاز.");
+        isReconnectStopped = true;
+        clearTimeout(reconnectTimer);
+        const errText = parsed.text || "رمز عبور اتاق نادرست است! دسترسی غیرمجاز.";
+        const isDuplicateName = errText.includes("نام") || errText.includes("حضور دارد");
+        updateStatus("disconnected", isDuplicateName ? "نام تکراری" : "رمز نادرست");
+        showGateError(errText);
         returnToRoomGate();
+        if (isDuplicateName) {
+          gateNickname.focus();
+          gateNickname.select();
+        }
         try {
           ws.close();
         } catch (e) {}
@@ -1209,14 +1299,23 @@
           room: state.room,
           password: state.password,
           sender: state.nickname,
+          clientId: clientId,
         })),
       });
 
       if (!joinRes.ok) {
         const errData = await joinRes.json().catch(() => ({}));
-        updateStatus("disconnected", "خطای تایید");
-        showGateError(errData.text || "رمز عبور اتاق نادرست است یا سرور در دسترس نیست.");
+        isReconnectStopped = true;
+        clearTimeout(reconnectTimer);
+        const errText = errData.text || "رمز عبور اتاق نادرست است یا سرور در دسترس نیست.";
+        const isDuplicateName = errText.includes("نام") || errText.includes("حضور دارد");
+        updateStatus("disconnected", isDuplicateName ? "نام تکراری" : "خطای تایید");
+        showGateError(errText);
         returnToRoomGate();
+        if (isDuplicateName) {
+          gateNickname.focus();
+          gateNickname.select();
+        }
         return;
       }
 
@@ -1420,6 +1519,19 @@
         ws.send(JSON.stringify({ type: "leave" }));
         ws.close();
       } catch (e) {}
+    } else if (state.transportMode === "http" && state.room) {
+      try {
+        const httpBase = getHttpBaseUrl(state.serverUrl);
+        fetch(`${httpBase}/api/leave`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(wrapAntiDpi({
+            room: state.room,
+            sender: state.nickname,
+            clientId: clientId,
+          })),
+        }).catch(() => {});
+      } catch (e) {}
     }
     ws = null;
     returnToRoomGate();
@@ -1439,6 +1551,7 @@
       showGateError("لطفاً هم نام اتاق و هم رمز عبور سخت را وارد کنید.");
       return;
     }
+    isReconnectStopped = false;
     connectAndJoinRoom(room, password, nickname);
   });
 
@@ -1521,7 +1634,10 @@
       Notification.requestPermission().then((permission) => {
         if (permission === "granted") {
           notifBanner.classList.add("hidden");
-          nativeToast("اعلان‌های صفحه قفل فعال شد");
+          state.notificationsEnabled = true;
+          updateNotificationUI();
+          persistSettings();
+          nativeToast("اعلان‌های صفحه قفل فعال شد 🔔");
           triggerBackgroundNotification("رخش چت", "اعلان‌ها فعال شدند و آماده دریافت پیام روی صفحه قفل هستند.", state.room || "سیستم");
         } else {
           nativeToast("مجوز اعلان صادر نشد");
@@ -1533,7 +1649,16 @@
   }
 
   btnEnableNotif.addEventListener("click", requestNotificationAccess);
-  btnNotification.addEventListener("click", requestNotificationAccess);
+  btnNotification.addEventListener("click", toggleNotifications);
+
+  if (notificationToggle) {
+    notificationToggle.addEventListener("change", () => {
+      state.notificationsEnabled = notificationToggle.checked;
+      updateNotificationUI();
+      persistSettings();
+      nativeToast(state.notificationsEnabled ? "اعلان‌ها روشن شد 🔔" : "اعلان‌ها خاموش شد 🔕");
+    });
+  }
 
   // Settings Modal Handlers
   function openSettings() {
@@ -1542,6 +1667,7 @@
     if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
     if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
     autoReconnectInput.checked = state.autoReconnect;
+    if (notificationToggle) notificationToggle.checked = state.notificationsEnabled;
     if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
     keepCredentialsInput.checked = state.keepCredentials;
     settingsModal.classList.remove("hidden");
