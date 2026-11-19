@@ -807,6 +807,120 @@ body {
   gap: 6px;
 }
 
+.server-test-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.btn-test-conn {
+  background: var(--bg-surface-elevated);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.btn-test-conn:hover {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.6);
+  color: #7dd3fc;
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.2);
+}
+
+.btn-test-conn:active {
+  transform: scale(0.97);
+}
+
+.btn-test-conn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-test-conn-sm {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.test-feedback-box {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  transition: all 0.2s ease;
+  animation: fadeInFeedback 0.25s ease-out;
+}
+
+@keyframes fadeInFeedback {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.test-feedback-box.testing {
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: #7dd3fc;
+}
+
+.test-feedback-box.success {
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #86efac;
+}
+
+.test-feedback-box.warning {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  color: #fde047;
+}
+
+.test-feedback-box.error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.test-feedback-box .test-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 5px;
+  font-size: 11px;
+  opacity: 0.95;
+}
+
+.test-feedback-box .test-sub {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.test-feedback-box .test-reasons {
+  margin: 6px 0 0 16px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.test-feedback-box .test-hint {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+  font-size: 11px;
+  color: #e2e8f0;
+}
+
 .field-label-sm {
   font-size: 12px;
   font-weight: 600;

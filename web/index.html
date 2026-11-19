@@ -161,6 +161,16 @@
                 placeholder="ws://193.168.175.227:8765" 
                 value="" 
               />
+              <div class="server-test-row">
+                <button type="button" id="btnTestGateConn" class="btn-test-conn btn-test-conn-sm">
+                  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <span>🔍 تست آنی اتصال سرور</span>
+                </button>
+              </div>
+              <div id="gateTestFeedback" class="test-feedback-box hidden"></div>
             </div>
           </div>
 
@@ -242,6 +252,16 @@
               dir="ltr"
               placeholder="ws://193.168.175.227:8765 یا wss://..." 
             />
+            <div class="server-test-row">
+              <button type="button" id="btnTestServerConn" class="btn-test-conn">
+                <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <span>🔍 تست و بررسی آنی اتصال</span>
+              </button>
+            </div>
+            <div id="serverTestFeedback" class="test-feedback-box hidden"></div>
           </div>
 
           <!-- Connection Mode Presets -->

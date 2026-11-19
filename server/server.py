@@ -61,6 +61,26 @@ POSSIBLE_WEB_DIRS = [
 ]
 WEB_DIR = next((d for d in POSSIBLE_WEB_DIRS if d and os.path.isdir(d)), "")
 
+
+def get_active_tunnel():
+    """Retrieve active Cloudflare Tunnel URLs if running."""
+    tunnel_file = os.path.join(BASE_DIR, "tunnel_url.txt")
+    if os.path.exists(tunnel_file):
+        try:
+            with open(tunnel_file, "r", encoding="utf-8") as f:
+                lines = [l.strip() for l in f if l.strip()]
+                if lines:
+                    http_url = lines[0]
+                    ws_url = lines[1] if len(lines) > 1 else http_url.replace("https://", "wss://").replace("http://", "ws://")
+                    return {
+                        "active": True,
+                        "url": http_url,
+                        "ws_url": ws_url
+                    }
+        except Exception:
+            pass
+    return {"active": False, "url": None, "ws_url": None}
+
 FALLBACK_HTML = """<!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
@@ -902,8 +922,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     writer.close()
                     return
 
-                # Health and status checks
-                if path in ("/health", "/status", "/ping"):
+                # Health, status, and Cloudflare tunnel checks
+                if path in ("/health", "/status", "/ping", "/api/tunnel"):
                     resp_dict = {
                         "status": "ok",
                         "service": "rakhssh-chat",
@@ -919,6 +939,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             "timing_jitter",
                             "cloudflare_tunnel_compatible"
                         ],
+                        "tunnel": get_active_tunnel(),
                         "timestamp": int(time.time()),
                     }
                     apply_anti_dpi_padding(resp_dict, 128, 512)

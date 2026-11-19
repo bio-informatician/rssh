@@ -180,6 +180,26 @@ POSSIBLE_WEB_DIRS = [
 ]
 WEB_DIR = next((d for d in POSSIBLE_WEB_DIRS if d and os.path.isdir(d)), "")
 
+
+def get_active_tunnel():
+    """Retrieve active Cloudflare Tunnel URLs if running."""
+    tunnel_file = os.path.join(BASE_DIR, "tunnel_url.txt")
+    if os.path.exists(tunnel_file):
+        try:
+            with open(tunnel_file, "r", encoding="utf-8") as f:
+                lines = [l.strip() for l in f if l.strip()]
+                if lines:
+                    http_url = lines[0]
+                    ws_url = lines[1] if len(lines) > 1 else http_url.replace("https://", "wss://").replace("http://", "ws://")
+                    return {
+                        "active": True,
+                        "url": http_url,
+                        "ws_url": ws_url
+                    }
+        except Exception:
+            pass
+    return {"active": False, "url": None, "ws_url": None}
+
 FALLBACK_HTML = """<!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
@@ -1021,8 +1041,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     writer.close()
                     return
 
-                # Health and status checks
-                if path in ("/health", "/status", "/ping"):
+                # Health, status, and Cloudflare tunnel checks
+                if path in ("/health", "/status", "/ping", "/api/tunnel"):
                     resp_dict = {
                         "status": "ok",
                         "service": "rakhssh-chat",
@@ -1038,6 +1058,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                             "timing_jitter",
                             "cloudflare_tunnel_compatible"
                         ],
+                        "tunnel": get_active_tunnel(),
                         "timestamp": int(time.time()),
                     }
                     apply_anti_dpi_padding(resp_dict, 128, 512)
@@ -1871,6 +1892,16 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
                 placeholder="ws://193.168.175.227:8765" 
                 value="" 
               />
+              <div class="server-test-row">
+                <button type="button" id="btnTestGateConn" class="btn-test-conn btn-test-conn-sm">
+                  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <span>🔍 تست آنی اتصال سرور</span>
+                </button>
+              </div>
+              <div id="gateTestFeedback" class="test-feedback-box hidden"></div>
             </div>
           </div>
 
@@ -1952,6 +1983,16 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
               dir="ltr"
               placeholder="ws://193.168.175.227:8765 یا wss://..." 
             />
+            <div class="server-test-row">
+              <button type="button" id="btnTestServerConn" class="btn-test-conn">
+                <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <span>🔍 تست و بررسی آنی اتصال</span>
+              </button>
+            </div>
+            <div id="serverTestFeedback" class="test-feedback-box hidden"></div>
           </div>
 
           <!-- Connection Mode Presets -->
@@ -2868,6 +2909,120 @@ body {
   gap: 6px;
 }
 
+.server-test-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.btn-test-conn {
+  background: var(--bg-surface-elevated);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.btn-test-conn:hover {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.6);
+  color: #7dd3fc;
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.2);
+}
+
+.btn-test-conn:active {
+  transform: scale(0.97);
+}
+
+.btn-test-conn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-test-conn-sm {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.test-feedback-box {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  transition: all 0.2s ease;
+  animation: fadeInFeedback 0.25s ease-out;
+}
+
+@keyframes fadeInFeedback {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.test-feedback-box.testing {
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: #7dd3fc;
+}
+
+.test-feedback-box.success {
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #86efac;
+}
+
+.test-feedback-box.warning {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  color: #fde047;
+}
+
+.test-feedback-box.error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.test-feedback-box .test-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 5px;
+  font-size: 11px;
+  opacity: 0.95;
+}
+
+.test-feedback-box .test-sub {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.test-feedback-box .test-reasons {
+  margin: 6px 0 0 16px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.test-feedback-box .test-hint {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+  font-size: 11px;
+  color: #e2e8f0;
+}
+
 .field-label-sm {
   font-size: 12px;
   font-weight: 600;
@@ -3174,6 +3329,8 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const btnToggleAdvanced = document.getElementById("btnToggleAdvanced");
   const advancedServerBlock = document.getElementById("advancedServerBlock");
   const serverUrlInput = document.getElementById("serverUrl");
+  const btnTestGateConn = document.getElementById("btnTestGateConn");
+  const gateTestFeedback = document.getElementById("gateTestFeedback");
   const btnEnterRoom = document.getElementById("btnEnterRoom");
 
   // DOM Elements - Active Chat View
@@ -3190,6 +3347,8 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const settingsModal = document.getElementById("settingsModal");
   const btnCloseSettings = document.getElementById("btnCloseSettings");
   const modalServerUrl = document.getElementById("modalServerUrl");
+  const btnTestServerConn = document.getElementById("btnTestServerConn");
+  const serverTestFeedback = document.getElementById("serverTestFeedback");
   const modalCleanIp = document.getElementById("modalCleanIp");
   const antiDpiToggle = document.getElementById("antiDpiToggle");
   const decoyChaffToggle = document.getElementById("decoyChaffToggle");
@@ -3280,7 +3439,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   // 1. Load Saved Configuration & State
   const savedConfig = JSON.parse(localStorage.getItem("rssh_chat_auth") || "{}");
-  if (savedConfig.serverUrl && !savedConfig.serverUrl.includes("trycloudflare.com")) {
+  if (savedConfig.serverUrl) {
     state.serverUrl = savedConfig.serverUrl;
   } else if (window.location && window.location.host && !window.location.protocol.startsWith("file")) {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -3288,6 +3447,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   } else {
     state.serverUrl = "ws://193.168.175.227:8765";
   }
+  state.activeTunnelUrl = "wss://occurring-nearby-salvador-photography.trycloudflare.com";
 
   if (savedConfig.nickname) state.nickname = savedConfig.nickname;
   if (savedConfig.room) state.room = savedConfig.room;
@@ -3417,6 +3577,205 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     }
     const proto = window.location.protocol === "https:" ? "https:" : "http:";
     return `${proto}//${window.location.host || "193.168.175.227:8765"}`;
+  }
+
+  async function queryActiveTunnel(baseUrl) {
+    try {
+      const httpBase = getHttpBaseUrl(baseUrl || state.serverUrl || "ws://193.168.175.227:8765");
+      const resp = await fetch(`${httpBase}/api/tunnel`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(3000),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.tunnel && data.tunnel.active && data.tunnel.ws_url) {
+          state.activeTunnelUrl = data.tunnel.ws_url;
+          return data.tunnel;
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  async function testServerConnectivity(targetUrl, feedbackEl, btnEl) {
+    if (!feedbackEl) return;
+
+    let rawUrl = (targetUrl || "").trim();
+    if (!rawUrl) {
+      rawUrl = state.serverUrl || "ws://193.168.175.227:8765";
+    }
+
+    // Determine normalized WS and HTTP URLs
+    let wsUrl = rawUrl;
+    let httpUrl = rawUrl;
+
+    if (!wsUrl.includes("://")) {
+      if (wsUrl.includes("trycloudflare.com") || wsUrl.endsWith(":443")) {
+        wsUrl = "wss://" + wsUrl;
+        httpUrl = "https://" + rawUrl;
+      } else {
+        wsUrl = "ws://" + wsUrl;
+        httpUrl = "http://" + rawUrl;
+      }
+    } else {
+      if (wsUrl.startsWith("http://")) {
+        wsUrl = "ws://" + wsUrl.slice(7);
+        httpUrl = rawUrl;
+      } else if (wsUrl.startsWith("https://")) {
+        wsUrl = "wss://" + wsUrl.slice(8);
+        httpUrl = rawUrl;
+      } else if (wsUrl.startsWith("ws://")) {
+        httpUrl = "http://" + wsUrl.slice(5);
+      } else if (wsUrl.startsWith("wss://")) {
+        httpUrl = "https://" + wsUrl.slice(6);
+      }
+    }
+
+    // Clean paths
+    httpUrl = httpUrl.replace(/\/ws\/?$/, "").replace(/\/+$/, "");
+    wsUrl = wsUrl.replace(/\/+$/, "");
+
+    // Set UI testing state
+    feedbackEl.classList.remove("hidden", "success", "warning", "error");
+    feedbackEl.classList.add("testing");
+    feedbackEl.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="reconnect-icon spinning">🔄</span>
+        <span>در حال آزمایش و بررسی اتصال به سرور...</span>
+      </div>
+    `;
+
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.classList.add("testing");
+    }
+
+    // Run HTTP and WS tests with timeout
+    const testWsPromise = new Promise((resolve) => {
+      const startT = performance.now();
+      let testSocket = null;
+      let timer = null;
+
+      try {
+        testSocket = new WebSocket(wsUrl);
+      } catch (err) {
+        resolve({ ok: false, error: err.message || "آدرس وب‌سوکت نامعتبر است" });
+        return;
+      }
+
+      timer = setTimeout(() => {
+        try { if (testSocket) testSocket.close(); } catch (e) {}
+        resolve({ ok: false, error: "مهلت زمانی برقراری وب‌سوکت به پایان رسید (Timeout 5s)" });
+      }, 5000);
+
+      testSocket.onopen = () => {
+        clearTimeout(timer);
+        const lat = Math.round(performance.now() - startT);
+        try { testSocket.close(); } catch (e) {}
+        resolve({ ok: true, latency: lat });
+      };
+
+      testSocket.onerror = () => {
+        clearTimeout(timer);
+        try { testSocket.close(); } catch (err) {}
+        resolve({ ok: false, error: "خطای پروتکل یا مسدودسازی دست‌دادن وب‌سوکت" });
+      };
+    });
+
+    const testHttpPromise = (async () => {
+      const startT = performance.now();
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(`${httpUrl}/health`, {
+          method: "GET",
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const lat = Math.round(performance.now() - startT);
+          const json = await res.json().catch(() => null);
+          return { ok: true, latency: lat, data: json };
+        }
+        return { ok: false, error: `پاسخ سرور HTTP: ${res.status} ${res.statusText}` };
+      } catch (err) {
+        return { ok: false, error: err.name === "AbortError" ? "مهلت زمانی به پایان رسید (Timeout 5s)" : (err.message || "سرور پاسخ نداد") };
+      }
+    })();
+
+    const [wsRes, httpRes] = await Promise.all([testWsPromise, testHttpPromise]);
+
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.classList.remove("testing");
+    }
+
+    feedbackEl.classList.remove("testing");
+
+    if (wsRes.ok) {
+      // Full Success: WebSocket is OPEN!
+      feedbackEl.classList.add("success");
+      const serverVersion = (httpRes.data && httpRes.data.version) ? `نسخه ${httpRes.data.version}` : "";
+      feedbackEl.innerHTML = `
+        <strong>🟢 اتصال با موفقیت برقرار شد!</strong>
+        <div class="test-meta">
+          <span>⚡ وب‌سوکت: فعال</span>
+          <span>⏱️ پینگ: ${wsRes.latency} میلی‌ثانیه</span>
+          ${serverVersion ? `<span>🏷️ ${serverVersion}</span>` : ""}
+        </div>
+        <div class="test-sub">ارتباط دوطرفه با سرور رخش چت برقرار است و آماده تبادل پیام می‌باشد.</div>
+      `;
+      nativeToast(`✅ اتصال برقرار شد (پینگ: ${wsRes.latency}ms)`);
+
+      // Auto-update state and persist
+      state.serverUrl = wsUrl;
+      if (serverUrlInput) serverUrlInput.value = wsUrl;
+      if (modalServerUrl) modalServerUrl.value = wsUrl;
+      persistSettings();
+
+      if (httpRes.data && httpRes.data.tunnel && httpRes.data.tunnel.ws_url) {
+        state.activeTunnelUrl = httpRes.data.tunnel.ws_url;
+      }
+    } else if (httpRes.ok) {
+      // Partial Success: HTTP Tunnel works, WS blocked
+      feedbackEl.classList.add("warning");
+      const serverVersion = (httpRes.data && httpRes.data.version) ? `نسخه ${httpRes.data.version}` : "";
+      feedbackEl.innerHTML = `
+        <strong>🟡 اتصال از طریق تونل امن HTTP برقرار شد</strong>
+        <div class="test-meta">
+          <span>🛡️ تونل ضد فایروال HTTP: فعال</span>
+          <span>⏱️ پینگ: ${httpRes.latency} میلی‌ثانیه</span>
+          ${serverVersion ? `<span>🏷️ ${serverVersion}</span>` : ""}
+        </div>
+        <div class="test-sub">پورت وب‌سوکت در این شبکه مسدود است، اما تونل امن HTTP فعال است و برنامه پیام‌ها را مبادله می‌کند.</div>
+      `;
+      nativeToast(`🟡 تونل HTTP متصل شد (پینگ: ${httpRes.latency}ms)`);
+
+      state.serverUrl = wsUrl;
+      if (serverUrlInput) serverUrlInput.value = wsUrl;
+      if (modalServerUrl) modalServerUrl.value = wsUrl;
+      persistSettings();
+
+      if (httpRes.data && httpRes.data.tunnel && httpRes.data.tunnel.ws_url) {
+        state.activeTunnelUrl = httpRes.data.tunnel.ws_url;
+      }
+    } else {
+      // Failure
+      feedbackEl.classList.add("error");
+      const isTryCloudflare = rawUrl.includes("trycloudflare.com");
+      feedbackEl.innerHTML = `
+        <strong>🔴 خطا در برقراری ارتباط با سرور!</strong>
+        <div class="test-sub">هیچ پاسخی از آدرس <code>${escapeHtml(rawUrl)}</code> دریافت نشد.</div>
+        <ul class="test-reasons">
+          ${isTryCloudflare ? `<li><strong>آدرس کلودفلر منقضی شده:</strong> تونل‌های موقت trycloudflare پس از ریستارت سرور تغییر می‌کنند.</li>` : ""}
+          <li><strong>اختلال شبکه یا فیلترینگ:</strong> اگر از دامنه‌های کلودفلر استفاده می‌کنید، نیاز به VPN یا سرور مستقیم است.</li>
+          <li><strong>آدرس اشتباه:</strong> از دکمه‌های الگو مانند «⚡ سرور مستقیم (:8765)» استفاده کنید.</li>
+        </ul>
+        ${isTryCloudflare ? `<div class="test-hint">💡 پیشنهاد: دکمه «⚡ سرور مستقیم» را انتخاب کنید یا از آدرس به‌روزشده کلودفلر استفاده فرمایید.</div>` : ""}
+      `;
+      nativeToast("❌ عدم برقراری ارتباط با سرور");
+    }
   }
 
   // ==========================================================================
@@ -4970,6 +5329,10 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   // Settings Modal Handlers
   function openSettings() {
     modalServerUrl.value = state.serverUrl;
+    if (serverTestFeedback) {
+      serverTestFeedback.classList.add("hidden");
+      serverTestFeedback.innerHTML = "";
+    }
     if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
     if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
     if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
@@ -4978,9 +5341,11 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
     keepCredentialsInput.checked = state.keepCredentials;
     settingsModal.classList.remove("hidden");
+    queryActiveTunnel();
   }
 
   function closeSettings() {
+    const oldUrl = state.serverUrl;
     state.serverUrl = sanitizeServerUrl(modalServerUrl.value);
     serverUrlInput.value = state.serverUrl;
     if (modalCleanIp) state.cleanIp = modalCleanIp.value.trim();
@@ -4992,6 +5357,11 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     updateAntiDpiBadge();
     persistSettings();
     settingsModal.classList.add("hidden");
+
+    if (oldUrl !== state.serverUrl && state.isAuthenticated && state.room && state.password) {
+      nativeToast("در حال انتقال به آدرس جدید سرور...");
+      reconnect(0);
+    }
   }
 
   // Connection Presets Handlers
@@ -4999,15 +5369,53 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     btnPresetDirect.addEventListener("click", () => {
       modalServerUrl.value = "ws://193.168.175.227:8765";
       nativeToast("الگوی اتصال مستقیم سرور انتخاب شد (:8765)");
+      testServerConnectivity("ws://193.168.175.227:8765", serverTestFeedback, btnTestServerConn);
     });
   }
 
   if (btnPresetCfTunnel) {
-    btnPresetCfTunnel.addEventListener("click", () => {
-      // If a saved tunnel URL or host exists, use it, otherwise provide Cloudflare WSS template
-      const currentTunnel = state.serverUrl.startsWith("wss://") ? state.serverUrl : "wss://chat.yourdomain.com";
-      modalServerUrl.value = currentTunnel;
-      nativeToast("الگوی کلودفلر تونل انتخاب شد (WSS پورت 443)");
+    btnPresetCfTunnel.addEventListener("click", async () => {
+      let tunnelUrl = state.activeTunnelUrl || "wss://occurring-nearby-salvador-photography.trycloudflare.com";
+      const fetched = await queryActiveTunnel("ws://193.168.175.227:8765");
+      if (fetched && fetched.ws_url) {
+        tunnelUrl = fetched.ws_url;
+      }
+      modalServerUrl.value = tunnelUrl;
+      nativeToast("الگوی کلودفلر تونل فعال انتخاب شد (WSS پورت 443)");
+      testServerConnectivity(tunnelUrl, serverTestFeedback, btnTestServerConn);
+    });
+  }
+
+  // Direct test connection button listeners
+  if (btnTestServerConn) {
+    btnTestServerConn.addEventListener("click", () => {
+      const urlToTest = modalServerUrl.value.trim() || state.serverUrl;
+      testServerConnectivity(urlToTest, serverTestFeedback, btnTestServerConn);
+    });
+  }
+
+  if (btnTestGateConn) {
+    btnTestGateConn.addEventListener("click", () => {
+      const urlToTest = serverUrlInput.value.trim() || state.serverUrl;
+      testServerConnectivity(urlToTest, gateTestFeedback, btnTestGateConn);
+    });
+  }
+
+  if (modalServerUrl) {
+    modalServerUrl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        testServerConnectivity(modalServerUrl.value.trim(), serverTestFeedback, btnTestServerConn);
+      }
+    });
+  }
+
+  if (serverUrlInput) {
+    serverUrlInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        testServerConnectivity(serverUrlInput.value.trim(), gateTestFeedback, btnTestGateConn);
+      }
     });
   }
 

@@ -41,6 +41,8 @@
   const btnToggleAdvanced = document.getElementById("btnToggleAdvanced");
   const advancedServerBlock = document.getElementById("advancedServerBlock");
   const serverUrlInput = document.getElementById("serverUrl");
+  const btnTestGateConn = document.getElementById("btnTestGateConn");
+  const gateTestFeedback = document.getElementById("gateTestFeedback");
   const btnEnterRoom = document.getElementById("btnEnterRoom");
 
   // DOM Elements - Active Chat View
@@ -57,6 +59,8 @@
   const settingsModal = document.getElementById("settingsModal");
   const btnCloseSettings = document.getElementById("btnCloseSettings");
   const modalServerUrl = document.getElementById("modalServerUrl");
+  const btnTestServerConn = document.getElementById("btnTestServerConn");
+  const serverTestFeedback = document.getElementById("serverTestFeedback");
   const modalCleanIp = document.getElementById("modalCleanIp");
   const antiDpiToggle = document.getElementById("antiDpiToggle");
   const decoyChaffToggle = document.getElementById("decoyChaffToggle");
@@ -147,7 +151,7 @@
 
   // 1. Load Saved Configuration & State
   const savedConfig = JSON.parse(localStorage.getItem("rssh_chat_auth") || "{}");
-  if (savedConfig.serverUrl && !savedConfig.serverUrl.includes("trycloudflare.com")) {
+  if (savedConfig.serverUrl) {
     state.serverUrl = savedConfig.serverUrl;
   } else if (window.location && window.location.host && !window.location.protocol.startsWith("file")) {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -155,6 +159,7 @@
   } else {
     state.serverUrl = "ws://193.168.175.227:8765";
   }
+  state.activeTunnelUrl = "wss://occurring-nearby-salvador-photography.trycloudflare.com";
 
   if (savedConfig.nickname) state.nickname = savedConfig.nickname;
   if (savedConfig.room) state.room = savedConfig.room;
@@ -284,6 +289,205 @@
     }
     const proto = window.location.protocol === "https:" ? "https:" : "http:";
     return `${proto}//${window.location.host || "193.168.175.227:8765"}`;
+  }
+
+  async function queryActiveTunnel(baseUrl) {
+    try {
+      const httpBase = getHttpBaseUrl(baseUrl || state.serverUrl || "ws://193.168.175.227:8765");
+      const resp = await fetch(`${httpBase}/api/tunnel`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(3000),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.tunnel && data.tunnel.active && data.tunnel.ws_url) {
+          state.activeTunnelUrl = data.tunnel.ws_url;
+          return data.tunnel;
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  async function testServerConnectivity(targetUrl, feedbackEl, btnEl) {
+    if (!feedbackEl) return;
+
+    let rawUrl = (targetUrl || "").trim();
+    if (!rawUrl) {
+      rawUrl = state.serverUrl || "ws://193.168.175.227:8765";
+    }
+
+    // Determine normalized WS and HTTP URLs
+    let wsUrl = rawUrl;
+    let httpUrl = rawUrl;
+
+    if (!wsUrl.includes("://")) {
+      if (wsUrl.includes("trycloudflare.com") || wsUrl.endsWith(":443")) {
+        wsUrl = "wss://" + wsUrl;
+        httpUrl = "https://" + rawUrl;
+      } else {
+        wsUrl = "ws://" + wsUrl;
+        httpUrl = "http://" + rawUrl;
+      }
+    } else {
+      if (wsUrl.startsWith("http://")) {
+        wsUrl = "ws://" + wsUrl.slice(7);
+        httpUrl = rawUrl;
+      } else if (wsUrl.startsWith("https://")) {
+        wsUrl = "wss://" + wsUrl.slice(8);
+        httpUrl = rawUrl;
+      } else if (wsUrl.startsWith("ws://")) {
+        httpUrl = "http://" + wsUrl.slice(5);
+      } else if (wsUrl.startsWith("wss://")) {
+        httpUrl = "https://" + wsUrl.slice(6);
+      }
+    }
+
+    // Clean paths
+    httpUrl = httpUrl.replace(/\/ws\/?$/, "").replace(/\/+$/, "");
+    wsUrl = wsUrl.replace(/\/+$/, "");
+
+    // Set UI testing state
+    feedbackEl.classList.remove("hidden", "success", "warning", "error");
+    feedbackEl.classList.add("testing");
+    feedbackEl.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="reconnect-icon spinning">🔄</span>
+        <span>در حال آزمایش و بررسی اتصال به سرور...</span>
+      </div>
+    `;
+
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.classList.add("testing");
+    }
+
+    // Run HTTP and WS tests with timeout
+    const testWsPromise = new Promise((resolve) => {
+      const startT = performance.now();
+      let testSocket = null;
+      let timer = null;
+
+      try {
+        testSocket = new WebSocket(wsUrl);
+      } catch (err) {
+        resolve({ ok: false, error: err.message || "آدرس وب‌سوکت نامعتبر است" });
+        return;
+      }
+
+      timer = setTimeout(() => {
+        try { if (testSocket) testSocket.close(); } catch (e) {}
+        resolve({ ok: false, error: "مهلت زمانی برقراری وب‌سوکت به پایان رسید (Timeout 5s)" });
+      }, 5000);
+
+      testSocket.onopen = () => {
+        clearTimeout(timer);
+        const lat = Math.round(performance.now() - startT);
+        try { testSocket.close(); } catch (e) {}
+        resolve({ ok: true, latency: lat });
+      };
+
+      testSocket.onerror = () => {
+        clearTimeout(timer);
+        try { testSocket.close(); } catch (err) {}
+        resolve({ ok: false, error: "خطای پروتکل یا مسدودسازی دست‌دادن وب‌سوکت" });
+      };
+    });
+
+    const testHttpPromise = (async () => {
+      const startT = performance.now();
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(`${httpUrl}/health`, {
+          method: "GET",
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const lat = Math.round(performance.now() - startT);
+          const json = await res.json().catch(() => null);
+          return { ok: true, latency: lat, data: json };
+        }
+        return { ok: false, error: `پاسخ سرور HTTP: ${res.status} ${res.statusText}` };
+      } catch (err) {
+        return { ok: false, error: err.name === "AbortError" ? "مهلت زمانی به پایان رسید (Timeout 5s)" : (err.message || "سرور پاسخ نداد") };
+      }
+    })();
+
+    const [wsRes, httpRes] = await Promise.all([testWsPromise, testHttpPromise]);
+
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.classList.remove("testing");
+    }
+
+    feedbackEl.classList.remove("testing");
+
+    if (wsRes.ok) {
+      // Full Success: WebSocket is OPEN!
+      feedbackEl.classList.add("success");
+      const serverVersion = (httpRes.data && httpRes.data.version) ? `نسخه ${httpRes.data.version}` : "";
+      feedbackEl.innerHTML = `
+        <strong>🟢 اتصال با موفقیت برقرار شد!</strong>
+        <div class="test-meta">
+          <span>⚡ وب‌سوکت: فعال</span>
+          <span>⏱️ پینگ: ${wsRes.latency} میلی‌ثانیه</span>
+          ${serverVersion ? `<span>🏷️ ${serverVersion}</span>` : ""}
+        </div>
+        <div class="test-sub">ارتباط دوطرفه با سرور رخش چت برقرار است و آماده تبادل پیام می‌باشد.</div>
+      `;
+      nativeToast(`✅ اتصال برقرار شد (پینگ: ${wsRes.latency}ms)`);
+
+      // Auto-update state and persist
+      state.serverUrl = wsUrl;
+      if (serverUrlInput) serverUrlInput.value = wsUrl;
+      if (modalServerUrl) modalServerUrl.value = wsUrl;
+      persistSettings();
+
+      if (httpRes.data && httpRes.data.tunnel && httpRes.data.tunnel.ws_url) {
+        state.activeTunnelUrl = httpRes.data.tunnel.ws_url;
+      }
+    } else if (httpRes.ok) {
+      // Partial Success: HTTP Tunnel works, WS blocked
+      feedbackEl.classList.add("warning");
+      const serverVersion = (httpRes.data && httpRes.data.version) ? `نسخه ${httpRes.data.version}` : "";
+      feedbackEl.innerHTML = `
+        <strong>🟡 اتصال از طریق تونل امن HTTP برقرار شد</strong>
+        <div class="test-meta">
+          <span>🛡️ تونل ضد فایروال HTTP: فعال</span>
+          <span>⏱️ پینگ: ${httpRes.latency} میلی‌ثانیه</span>
+          ${serverVersion ? `<span>🏷️ ${serverVersion}</span>` : ""}
+        </div>
+        <div class="test-sub">پورت وب‌سوکت در این شبکه مسدود است، اما تونل امن HTTP فعال است و برنامه پیام‌ها را مبادله می‌کند.</div>
+      `;
+      nativeToast(`🟡 تونل HTTP متصل شد (پینگ: ${httpRes.latency}ms)`);
+
+      state.serverUrl = wsUrl;
+      if (serverUrlInput) serverUrlInput.value = wsUrl;
+      if (modalServerUrl) modalServerUrl.value = wsUrl;
+      persistSettings();
+
+      if (httpRes.data && httpRes.data.tunnel && httpRes.data.tunnel.ws_url) {
+        state.activeTunnelUrl = httpRes.data.tunnel.ws_url;
+      }
+    } else {
+      // Failure
+      feedbackEl.classList.add("error");
+      const isTryCloudflare = rawUrl.includes("trycloudflare.com");
+      feedbackEl.innerHTML = `
+        <strong>🔴 خطا در برقراری ارتباط با سرور!</strong>
+        <div class="test-sub">هیچ پاسخی از آدرس <code>${escapeHtml(rawUrl)}</code> دریافت نشد.</div>
+        <ul class="test-reasons">
+          ${isTryCloudflare ? `<li><strong>آدرس کلودفلر منقضی شده:</strong> تونل‌های موقت trycloudflare پس از ریستارت سرور تغییر می‌کنند.</li>` : ""}
+          <li><strong>اختلال شبکه یا فیلترینگ:</strong> اگر از دامنه‌های کلودفلر استفاده می‌کنید، نیاز به VPN یا سرور مستقیم است.</li>
+          <li><strong>آدرس اشتباه:</strong> از دکمه‌های الگو مانند «⚡ سرور مستقیم (:8765)» استفاده کنید.</li>
+        </ul>
+        ${isTryCloudflare ? `<div class="test-hint">💡 پیشنهاد: دکمه «⚡ سرور مستقیم» را انتخاب کنید یا از آدرس به‌روزشده کلودفلر استفاده فرمایید.</div>` : ""}
+      `;
+      nativeToast("❌ عدم برقراری ارتباط با سرور");
+    }
   }
 
   // ==========================================================================
@@ -1837,6 +2041,10 @@
   // Settings Modal Handlers
   function openSettings() {
     modalServerUrl.value = state.serverUrl;
+    if (serverTestFeedback) {
+      serverTestFeedback.classList.add("hidden");
+      serverTestFeedback.innerHTML = "";
+    }
     if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
     if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
     if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
@@ -1845,9 +2053,11 @@
     if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
     keepCredentialsInput.checked = state.keepCredentials;
     settingsModal.classList.remove("hidden");
+    queryActiveTunnel();
   }
 
   function closeSettings() {
+    const oldUrl = state.serverUrl;
     state.serverUrl = sanitizeServerUrl(modalServerUrl.value);
     serverUrlInput.value = state.serverUrl;
     if (modalCleanIp) state.cleanIp = modalCleanIp.value.trim();
@@ -1859,6 +2069,11 @@
     updateAntiDpiBadge();
     persistSettings();
     settingsModal.classList.add("hidden");
+
+    if (oldUrl !== state.serverUrl && state.isAuthenticated && state.room && state.password) {
+      nativeToast("در حال انتقال به آدرس جدید سرور...");
+      reconnect(0);
+    }
   }
 
   // Connection Presets Handlers
@@ -1866,15 +2081,53 @@
     btnPresetDirect.addEventListener("click", () => {
       modalServerUrl.value = "ws://193.168.175.227:8765";
       nativeToast("الگوی اتصال مستقیم سرور انتخاب شد (:8765)");
+      testServerConnectivity("ws://193.168.175.227:8765", serverTestFeedback, btnTestServerConn);
     });
   }
 
   if (btnPresetCfTunnel) {
-    btnPresetCfTunnel.addEventListener("click", () => {
-      // If a saved tunnel URL or host exists, use it, otherwise provide Cloudflare WSS template
-      const currentTunnel = state.serverUrl.startsWith("wss://") ? state.serverUrl : "wss://chat.yourdomain.com";
-      modalServerUrl.value = currentTunnel;
-      nativeToast("الگوی کلودفلر تونل انتخاب شد (WSS پورت 443)");
+    btnPresetCfTunnel.addEventListener("click", async () => {
+      let tunnelUrl = state.activeTunnelUrl || "wss://occurring-nearby-salvador-photography.trycloudflare.com";
+      const fetched = await queryActiveTunnel("ws://193.168.175.227:8765");
+      if (fetched && fetched.ws_url) {
+        tunnelUrl = fetched.ws_url;
+      }
+      modalServerUrl.value = tunnelUrl;
+      nativeToast("الگوی کلودفلر تونل فعال انتخاب شد (WSS پورت 443)");
+      testServerConnectivity(tunnelUrl, serverTestFeedback, btnTestServerConn);
+    });
+  }
+
+  // Direct test connection button listeners
+  if (btnTestServerConn) {
+    btnTestServerConn.addEventListener("click", () => {
+      const urlToTest = modalServerUrl.value.trim() || state.serverUrl;
+      testServerConnectivity(urlToTest, serverTestFeedback, btnTestServerConn);
+    });
+  }
+
+  if (btnTestGateConn) {
+    btnTestGateConn.addEventListener("click", () => {
+      const urlToTest = serverUrlInput.value.trim() || state.serverUrl;
+      testServerConnectivity(urlToTest, gateTestFeedback, btnTestGateConn);
+    });
+  }
+
+  if (modalServerUrl) {
+    modalServerUrl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        testServerConnectivity(modalServerUrl.value.trim(), serverTestFeedback, btnTestServerConn);
+      }
+    });
+  }
+
+  if (serverUrlInput) {
+    serverUrlInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        testServerConnectivity(serverUrlInput.value.trim(), gateTestFeedback, btnTestGateConn);
+      }
     });
   }
 
