@@ -138,6 +138,12 @@ body {
   border: 1px solid rgba(249, 115, 22, 0.4);
 }
 
+.transport-pill.ws.cleanip, .transport-pill.http.cleanip {
+  color: #c084fc;
+  background: rgba(168, 85, 247, 0.18);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+}
+
 .transport-pill.http {
   color: #38bdf8;
   background: rgba(56, 189, 248, 0.15);
@@ -997,8 +1003,8 @@ body {
 
 .preset-buttons-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
 }
 
 .preset-btn {
@@ -1006,13 +1012,14 @@ body {
   border: 1px solid var(--border-subtle);
   color: var(--text-light);
   border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 12px;
+  padding: 8px 6px;
+  font-size: 11.5px;
   font-weight: 500;
   cursor: pointer;
   font-family: inherit;
   transition: all 0.2s;
   text-align: center;
+  white-space: nowrap;
 }
 
 .preset-btn:hover {
@@ -1046,6 +1053,53 @@ body {
   content: " ✓";
   font-weight: 800;
   color: #fb923c;
+}
+
+.preset-btn.selected.cleanip-preset {
+  background: rgba(168, 85, 247, 0.22);
+  border-color: #a855f7;
+  color: #c084fc;
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.35);
+}
+
+.preset-btn.selected.cleanip-preset::after {
+  content: " ✓";
+  font-weight: 800;
+  color: #c084fc;
+}
+
+.cleanip-input-row {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cleanip-input-row.hidden {
+  display: none !important;
+}
+
+.cleanip-input-row input {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-light);
+  padding: 8px 10px;
+  font-size: 12px;
+  direction: ltr;
+  text-align: left;
+}
+
+.cleanip-input-row input:focus {
+  border-color: #a855f7;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.2);
+}
+
+.field-label-xs {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 .anti-dpi-section {
@@ -1300,6 +1354,12 @@ body {
   border: 1px solid rgba(249, 115, 22, 0.4);
 }
 
+.gate-mode-badge.cleanip {
+  color: #c084fc;
+  background: rgba(168, 85, 247, 0.16);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+}
+
 .active-conn-notice {
   margin-top: 8px;
   padding: 8px 12px;
@@ -1320,6 +1380,12 @@ body {
   color: #fdba74;
 }
 
+.active-conn-notice.cleanip {
+  background: rgba(168, 85, 247, 0.1);
+  border-color: rgba(168, 85, 247, 0.3);
+  color: #d8b4fe;
+}
+
 .modal-active-mode-banner {
   background: rgba(14, 165, 233, 0.12);
   border: 1px solid rgba(14, 165, 233, 0.35);
@@ -1336,6 +1402,11 @@ body {
 .modal-active-mode-banner.cf {
   background: rgba(249, 115, 22, 0.12);
   border-color: rgba(249, 115, 22, 0.35);
+}
+
+.modal-active-mode-banner.cleanip {
+  background: rgba(168, 85, 247, 0.12);
+  border-color: rgba(168, 85, 247, 0.35);
 }
 
 .active-mode-pill {
@@ -1355,6 +1426,12 @@ body {
   color: #fb923c;
   background: rgba(249, 115, 22, 0.25);
   border: 1px solid rgba(249, 115, 22, 0.5);
+}
+
+.active-mode-pill.cleanip {
+  color: #c084fc;
+  background: rgba(168, 85, 247, 0.25);
+  border: 1px solid rgba(168, 85, 247, 0.5);
 }
 
 /* Modal Open Background & Overlap Prevention */

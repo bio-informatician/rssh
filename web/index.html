@@ -157,11 +157,25 @@
             </div>
             <div class="preset-buttons-grid">
               <button type="button" id="btnGatePresetDirect" class="preset-btn selected">
-                ⚡ اتصال مستقیم به سرور
+                ⚡ سرور مستقیم
               </button>
               <button type="button" id="btnGatePresetCfTunnel" class="preset-btn cf-preset">
-                ☁️ اتصال به کلادفلر
+                ☁️ کلادفلر
               </button>
+              <button type="button" id="btnGatePresetCleanIp" class="preset-btn cleanip-preset">
+                🎯 کلین آی‌پی
+              </button>
+            </div>
+            <div id="gateCleanIpBlock" class="cleanip-input-row hidden">
+              <label for="gateCleanIp" class="field-label-xs">آی‌پی تمیز کلودفلر (Clean IP اختیاری):</label>
+              <input 
+                type="text" 
+                id="gateCleanIp" 
+                dir="ltr" 
+                placeholder="مثلاً: 104.16.132.229" 
+                value="" 
+              />
+              <small class="field-hint">در صورت اختلال یا فیلترینگ دامنه، از آی‌پی تمیز کلودفلر استفاده فرمایید.</small>
             </div>
             <div id="gateActiveConnNotice" class="active-conn-notice">
               <span>اتصال انتخابی: </span><strong id="gateActiveConnNoticeText">⚡ سرور مستقیم (193.168.175.227:8765)</strong>
@@ -299,13 +313,26 @@
             <span class="field-label-sm">روش اتصال به سرور:</span>
             <div class="preset-buttons-grid">
               <button type="button" id="btnPresetDirect" class="preset-btn selected">
-                ⚡ اتصال مستقیم به سرور
+                ⚡ سرور مستقیم
               </button>
               <button type="button" id="btnPresetCfTunnel" class="preset-btn cf-preset">
-                ☁️ اتصال به کلادفلر
+                ☁️ کلادفلر
+              </button>
+              <button type="button" id="btnPresetCleanIp" class="preset-btn cleanip-preset">
+                🎯 کلین آی‌پی
               </button>
             </div>
-            <small class="field-hint">در صورت اختلال شدید یا فیلترینگ پورت، از کلودفلر یا VPN فعال استفاده کنید.</small>
+            <div id="modalCleanIpBlock" class="cleanip-input-row hidden" style="margin-top:8px;">
+              <label for="modalCleanIp" class="field-label-xs">آی‌پی تمیز کلودفلر (Clean IP اختیاری):</label>
+              <input 
+                type="text" 
+                id="modalCleanIp" 
+                dir="ltr"
+                placeholder="مثلاً: 104.16.132.229 یا خالی" 
+              />
+              <small class="field-hint">تنها در شرایط اختلال DNS/SNI برای کاربران داخل ایران استفاده شود.</small>
+            </div>
+            <small class="field-hint">در صورت اختلال شدید یا فیلترینگ پورت، از کلودفلر یا کلین آی‌پی استفاده کنید.</small>
           </div>
 
           <!-- Anti-DPI & Traffic Shaping Section -->
@@ -330,17 +357,6 @@
               <span>● سایز هر بسته: ۴۰۰ تا ۱۶۰۰ بایت تصادفی</span>
               <span>● ناهماهنگی زمانی هارت‌بیت: ۱۴ تا ۲۸ ثانیه (Jittered)</span>
             </div>
-          </div>
-
-          <div class="form-group">
-            <label for="modalCleanIp">آی‌پی تمیز کلودفلر (Clean IP اختیاری):</label>
-            <input 
-              type="text" 
-              id="modalCleanIp" 
-              dir="ltr"
-              placeholder="مثلاً: 104.16.132.229 یا خالی" 
-            />
-            <small class="field-hint">تنها در شرایط اختلال DNS/SNI برای کاربران داخل ایران استفاده شود.</small>
           </div>
 
           <div class="form-group checkbox-group">

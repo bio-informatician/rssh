@@ -1888,11 +1888,25 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
             </div>
             <div class="preset-buttons-grid">
               <button type="button" id="btnGatePresetDirect" class="preset-btn selected">
-                ⚡ اتصال مستقیم به سرور
+                ⚡ سرور مستقیم
               </button>
               <button type="button" id="btnGatePresetCfTunnel" class="preset-btn cf-preset">
-                ☁️ اتصال به کلادفلر
+                ☁️ کلادفلر
               </button>
+              <button type="button" id="btnGatePresetCleanIp" class="preset-btn cleanip-preset">
+                🎯 کلین آی‌پی
+              </button>
+            </div>
+            <div id="gateCleanIpBlock" class="cleanip-input-row hidden">
+              <label for="gateCleanIp" class="field-label-xs">آی‌پی تمیز کلودفلر (Clean IP اختیاری):</label>
+              <input 
+                type="text" 
+                id="gateCleanIp" 
+                dir="ltr" 
+                placeholder="مثلاً: 104.16.132.229" 
+                value="" 
+              />
+              <small class="field-hint">در صورت اختلال یا فیلترینگ دامنه، از آی‌پی تمیز کلودفلر استفاده فرمایید.</small>
             </div>
             <div id="gateActiveConnNotice" class="active-conn-notice">
               <span>اتصال انتخابی: </span><strong id="gateActiveConnNoticeText">⚡ سرور مستقیم (193.168.175.227:8765)</strong>
@@ -2030,13 +2044,26 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
             <span class="field-label-sm">روش اتصال به سرور:</span>
             <div class="preset-buttons-grid">
               <button type="button" id="btnPresetDirect" class="preset-btn selected">
-                ⚡ اتصال مستقیم به سرور
+                ⚡ سرور مستقیم
               </button>
               <button type="button" id="btnPresetCfTunnel" class="preset-btn cf-preset">
-                ☁️ اتصال به کلادفلر
+                ☁️ کلادفلر
+              </button>
+              <button type="button" id="btnPresetCleanIp" class="preset-btn cleanip-preset">
+                🎯 کلین آی‌پی
               </button>
             </div>
-            <small class="field-hint">در صورت اختلال شدید یا فیلترینگ پورت، از کلودفلر یا VPN فعال استفاده کنید.</small>
+            <div id="modalCleanIpBlock" class="cleanip-input-row hidden" style="margin-top:8px;">
+              <label for="modalCleanIp" class="field-label-xs">آی‌پی تمیز کلودفلر (Clean IP اختیاری):</label>
+              <input 
+                type="text" 
+                id="modalCleanIp" 
+                dir="ltr"
+                placeholder="مثلاً: 104.16.132.229 یا خالی" 
+              />
+              <small class="field-hint">تنها در شرایط اختلال DNS/SNI برای کاربران داخل ایران استفاده شود.</small>
+            </div>
+            <small class="field-hint">در صورت اختلال شدید یا فیلترینگ پورت، از کلودفلر یا کلین آی‌پی استفاده کنید.</small>
           </div>
 
           <!-- Anti-DPI & Traffic Shaping Section -->
@@ -2061,17 +2088,6 @@ cat << 'INDEX_EOF' > "${INSTALL_DIR}/web/index.html"
               <span>● سایز هر بسته: ۴۰۰ تا ۱۶۰۰ بایت تصادفی</span>
               <span>● ناهماهنگی زمانی هارت‌بیت: ۱۴ تا ۲۸ ثانیه (Jittered)</span>
             </div>
-          </div>
-
-          <div class="form-group">
-            <label for="modalCleanIp">آی‌پی تمیز کلودفلر (Clean IP اختیاری):</label>
-            <input 
-              type="text" 
-              id="modalCleanIp" 
-              dir="ltr"
-              placeholder="مثلاً: 104.16.132.229 یا خالی" 
-            />
-            <small class="field-hint">تنها در شرایط اختلال DNS/SNI برای کاربران داخل ایران استفاده شود.</small>
           </div>
 
           <div class="form-group checkbox-group">
@@ -2268,6 +2284,12 @@ body {
   color: #fb923c;
   background: rgba(249, 115, 22, 0.18);
   border: 1px solid rgba(249, 115, 22, 0.4);
+}
+
+.transport-pill.ws.cleanip, .transport-pill.http.cleanip {
+  color: #c084fc;
+  background: rgba(168, 85, 247, 0.18);
+  border: 1px solid rgba(168, 85, 247, 0.4);
 }
 
 .transport-pill.http {
@@ -3129,8 +3151,8 @@ body {
 
 .preset-buttons-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
 }
 
 .preset-btn {
@@ -3138,13 +3160,14 @@ body {
   border: 1px solid var(--border-subtle);
   color: var(--text-light);
   border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 12px;
+  padding: 8px 6px;
+  font-size: 11.5px;
   font-weight: 500;
   cursor: pointer;
   font-family: inherit;
   transition: all 0.2s;
   text-align: center;
+  white-space: nowrap;
 }
 
 .preset-btn:hover {
@@ -3178,6 +3201,53 @@ body {
   content: " ✓";
   font-weight: 800;
   color: #fb923c;
+}
+
+.preset-btn.selected.cleanip-preset {
+  background: rgba(168, 85, 247, 0.22);
+  border-color: #a855f7;
+  color: #c084fc;
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.35);
+}
+
+.preset-btn.selected.cleanip-preset::after {
+  content: " ✓";
+  font-weight: 800;
+  color: #c084fc;
+}
+
+.cleanip-input-row {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cleanip-input-row.hidden {
+  display: none !important;
+}
+
+.cleanip-input-row input {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-light);
+  padding: 8px 10px;
+  font-size: 12px;
+  direction: ltr;
+  text-align: left;
+}
+
+.cleanip-input-row input:focus {
+  border-color: #a855f7;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.2);
+}
+
+.field-label-xs {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 .anti-dpi-section {
@@ -3432,6 +3502,12 @@ body {
   border: 1px solid rgba(249, 115, 22, 0.4);
 }
 
+.gate-mode-badge.cleanip {
+  color: #c084fc;
+  background: rgba(168, 85, 247, 0.16);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+}
+
 .active-conn-notice {
   margin-top: 8px;
   padding: 8px 12px;
@@ -3452,6 +3528,12 @@ body {
   color: #fdba74;
 }
 
+.active-conn-notice.cleanip {
+  background: rgba(168, 85, 247, 0.1);
+  border-color: rgba(168, 85, 247, 0.3);
+  color: #d8b4fe;
+}
+
 .modal-active-mode-banner {
   background: rgba(14, 165, 233, 0.12);
   border: 1px solid rgba(14, 165, 233, 0.35);
@@ -3468,6 +3550,11 @@ body {
 .modal-active-mode-banner.cf {
   background: rgba(249, 115, 22, 0.12);
   border-color: rgba(249, 115, 22, 0.35);
+}
+
+.modal-active-mode-banner.cleanip {
+  background: rgba(168, 85, 247, 0.12);
+  border-color: rgba(168, 85, 247, 0.35);
 }
 
 .active-mode-pill {
@@ -3487,6 +3574,12 @@ body {
   color: #fb923c;
   background: rgba(249, 115, 22, 0.25);
   border: 1px solid rgba(249, 115, 22, 0.5);
+}
+
+.active-mode-pill.cleanip {
+  color: #c084fc;
+  background: rgba(168, 85, 247, 0.25);
+  border: 1px solid rgba(168, 85, 247, 0.5);
 }
 
 /* Modal Open Background & Overlap Prevention */
@@ -3617,6 +3710,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const serverUrlInput = document.getElementById("serverUrl");
   const btnGatePresetDirect = document.getElementById("btnGatePresetDirect");
   const btnGatePresetCfTunnel = document.getElementById("btnGatePresetCfTunnel");
+  const btnGatePresetCleanIp = document.getElementById("btnGatePresetCleanIp");
+  const gateCleanIpBlock = document.getElementById("gateCleanIpBlock");
+  const gateCleanIp = document.getElementById("gateCleanIp");
   const gateActiveModeBadge = document.getElementById("gateActiveModeBadge");
   const gateActiveConnNotice = document.getElementById("gateActiveConnNotice");
   const gateActiveConnNoticeText = document.getElementById("gateActiveConnNoticeText");
@@ -3644,10 +3740,12 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   const btnTestServerConn = document.getElementById("btnTestServerConn");
   const serverTestFeedback = document.getElementById("serverTestFeedback");
   const modalCleanIp = document.getElementById("modalCleanIp");
+  const modalCleanIpBlock = document.getElementById("modalCleanIpBlock");
   const antiDpiToggle = document.getElementById("antiDpiToggle");
   const decoyChaffToggle = document.getElementById("decoyChaffToggle");
   const btnPresetDirect = document.getElementById("btnPresetDirect");
   const btnPresetCfTunnel = document.getElementById("btnPresetCfTunnel");
+  const btnPresetCleanIp = document.getElementById("btnPresetCleanIp");
   const autoReconnectInput = document.getElementById("autoReconnect");
   const notificationToggle = document.getElementById("notificationToggle");
   const vibrationToggle = document.getElementById("vibrationToggle");
@@ -3720,7 +3818,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   }
 
   function getConnectionMode(url) {
-    return isCloudflareUrl(url || state.serverUrl) ? "cloudflare" : "direct";
+    if (!url) return state.connectionMode || "direct";
+    if (state.cleanIp && url.includes(state.cleanIp)) return "cleanip";
+    return isCloudflareUrl(url) ? "cloudflare" : "direct";
   }
 
   const state = {
@@ -3747,16 +3847,15 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   // 1. Load Saved Configuration & State
   const savedConfig = JSON.parse(localStorage.getItem("rssh_chat_auth") || "{}");
   state.activeTunnelUrl = "wss://medications-firewall-angle-counter.trycloudflare.com";
+  if (savedConfig.cleanIp) state.cleanIp = savedConfig.cleanIp;
   state.connectionMode = savedConfig.connectionMode || (savedConfig.serverUrl ? getConnectionMode(savedConfig.serverUrl) : "direct");
 
   if (state.connectionMode === "cloudflare") {
-    state.serverUrl = (savedConfig.serverUrl && isCloudflareUrl(savedConfig.serverUrl))
-      ? savedConfig.serverUrl
-      : state.activeTunnelUrl;
+    state.serverUrl = savedConfig.serverUrl || state.activeTunnelUrl;
+  } else if (state.connectionMode === "cleanip") {
+    state.serverUrl = savedConfig.serverUrl || (state.cleanIp ? (state.cleanIp.includes("://") ? state.cleanIp : `wss://${state.cleanIp}:443`) : "wss://104.16.132.229:443");
   } else {
-    state.serverUrl = (savedConfig.serverUrl && !isCloudflareUrl(savedConfig.serverUrl))
-      ? savedConfig.serverUrl
-      : DIRECT_SERVER_URL;
+    state.serverUrl = savedConfig.serverUrl || DIRECT_SERVER_URL;
   }
 
   if (savedConfig.nickname) state.nickname = savedConfig.nickname;
@@ -3817,6 +3916,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   gateRoomPassword.value = state.password || "";
   serverUrlInput.value = state.serverUrl;
   modalServerUrl.value = state.serverUrl;
+  if (gateCleanIp) gateCleanIp.value = state.cleanIp || "";
   if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
   if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
   if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
@@ -3891,80 +3991,103 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   }
 
   function updatePresetSelectionUI(mode) {
-    const isCf = mode ? (mode === "cloudflare") : (state.connectionMode === "cloudflare" || isCloudflareUrl(state.serverUrl));
+    const currentMode = mode || state.connectionMode || "direct";
+    const isDirect = (currentMode === "direct");
+    const isCf = (currentMode === "cloudflare");
+    const isCleanIp = (currentMode === "cleanip");
 
     // Gate presets
     if (btnGatePresetDirect) {
-      if (!isCf) {
-        btnGatePresetDirect.classList.add("selected");
-      } else {
-        btnGatePresetDirect.classList.remove("selected");
-      }
+      btnGatePresetDirect.classList.toggle("selected", isDirect);
     }
     if (btnGatePresetCfTunnel) {
-      if (isCf) {
-        btnGatePresetCfTunnel.classList.add("selected", "cf-preset");
-      } else {
-        btnGatePresetCfTunnel.classList.remove("selected", "cf-preset");
-      }
+      btnGatePresetCfTunnel.classList.toggle("selected", isCf);
+      btnGatePresetCfTunnel.classList.toggle("cf-preset", isCf);
+    }
+    if (btnGatePresetCleanIp) {
+      btnGatePresetCleanIp.classList.toggle("selected", isCleanIp);
+      btnGatePresetCleanIp.classList.toggle("cleanip-preset", isCleanIp);
     }
 
     // Modal presets
     if (btnPresetDirect) {
-      if (!isCf) {
-        btnPresetDirect.classList.add("selected");
-      } else {
-        btnPresetDirect.classList.remove("selected");
-      }
+      btnPresetDirect.classList.toggle("selected", isDirect);
     }
     if (btnPresetCfTunnel) {
-      if (isCf) {
-        btnPresetCfTunnel.classList.add("selected", "cf-preset");
-      } else {
-        btnPresetCfTunnel.classList.remove("selected", "cf-preset");
-      }
+      btnPresetCfTunnel.classList.toggle("selected", isCf);
+      btnPresetCfTunnel.classList.toggle("cf-preset", isCf);
+    }
+    if (btnPresetCleanIp) {
+      btnPresetCleanIp.classList.toggle("selected", isCleanIp);
+      btnPresetCleanIp.classList.toggle("cleanip-preset", isCleanIp);
+    }
+
+    // Clean IP input visibility
+    if (gateCleanIpBlock) {
+      gateCleanIpBlock.classList.toggle("hidden", isDirect);
+    }
+    if (modalCleanIpBlock) {
+      modalCleanIpBlock.classList.toggle("hidden", isDirect);
     }
 
     // Gate screen notices
     if (gateActiveModeBadge) {
-      gateActiveModeBadge.className = `gate-mode-badge ${isCf ? "cf" : "direct"}`;
-      gateActiveModeBadge.textContent = isCf ? "☁️ کلادفلر" : "⚡ سرور مستقیم";
-    }
-    if (gateActiveConnNotice) {
-      if (isCf) {
-        gateActiveConnNotice.classList.add("cf");
+      if (isCleanIp) {
+        gateActiveModeBadge.className = "gate-mode-badge cleanip";
+        gateActiveModeBadge.textContent = "🎯 کلین آی‌پی";
+      } else if (isCf) {
+        gateActiveModeBadge.className = "gate-mode-badge cf";
+        gateActiveModeBadge.textContent = "☁️ کلادفلر";
       } else {
-        gateActiveConnNotice.classList.remove("cf");
+        gateActiveModeBadge.className = "gate-mode-badge direct";
+        gateActiveModeBadge.textContent = "⚡ سرور مستقیم";
       }
     }
+    if (gateActiveConnNotice) {
+      gateActiveConnNotice.className = `active-conn-notice ${isCleanIp ? "cleanip" : (isCf ? "cf" : "direct")}`;
+    }
     if (gateActiveConnNoticeText) {
-      gateActiveConnNoticeText.textContent = isCf
-        ? "☁️ کلادفلر تونل (پورت 443 امن، ضد فیلتر)"
-        : "⚡ سرور مستقیم (193.168.175.227:8765)";
+      if (isCleanIp) {
+        const displayIp = (gateCleanIp && gateCleanIp.value.trim()) || (modalCleanIp && modalCleanIp.value.trim()) || state.cleanIp || (serverUrlInput && serverUrlInput.value.trim()) || "104.16.132.229";
+        gateActiveConnNoticeText.textContent = `🎯 کلین آی‌پی کلودفلر (${displayIp})`;
+      } else if (isCf) {
+        const displayUrl = (serverUrlInput && serverUrlInput.value.trim()) || state.serverUrl || state.activeTunnelUrl || "کلادفلر تونل";
+        gateActiveConnNoticeText.textContent = `☁️ کلادفلر تونل (پورت 443 امن، ضد فیلتر)`;
+      } else {
+        gateActiveConnNoticeText.textContent = `⚡ سرور مستقیم (193.168.175.227:8765)`;
+      }
     }
 
     // Modal active banner
     if (modalActiveModeBanner) {
-      if (isCf) {
-        modalActiveModeBanner.classList.add("cf");
-      } else {
-        modalActiveModeBanner.classList.remove("cf");
-      }
+      modalActiveModeBanner.className = `modal-active-mode-banner ${isCleanIp ? "cleanip" : (isCf ? "cf" : "direct")}`;
     }
     if (modalActiveModePill) {
-      modalActiveModePill.className = `active-mode-pill ${isCf ? "cf" : "direct"}`;
-      modalActiveModePill.textContent = isCf
-        ? "☁️ اتصال به کلادفلر (:443)"
-        : "⚡ اتصال مستقیم به سرور (:8765)";
+      if (isCleanIp) {
+        modalActiveModePill.className = "active-mode-pill cleanip";
+        modalActiveModePill.textContent = "🎯 اتصال با کلین آی‌پی (Clean IP)";
+      } else if (isCf) {
+        modalActiveModePill.className = "active-mode-pill cf";
+        modalActiveModePill.textContent = "☁️ اتصال به کلادفلر (:443)";
+      } else {
+        modalActiveModePill.className = "active-mode-pill direct";
+        modalActiveModePill.textContent = "⚡ اتصال مستقیم به سرور (:8765)";
+      }
     }
   }
 
   function selectConnectionPreset(mode, autoTest = false) {
-    const isCf = (mode === "cloudflare");
-    state.connectionMode = isCf ? "cloudflare" : "direct";
-    const targetUrl = isCf 
-      ? (state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com")
-      : DIRECT_SERVER_URL;
+    state.connectionMode = mode;
+    let targetUrl = DIRECT_SERVER_URL;
+
+    if (mode === "cloudflare") {
+      targetUrl = state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com";
+    } else if (mode === "cleanip") {
+      const userIp = state.cleanIp || (modalCleanIp && modalCleanIp.value.trim()) || (gateCleanIp && gateCleanIp.value.trim()) || "104.16.132.229";
+      targetUrl = userIp.includes("://") ? userIp : `wss://${userIp}:443`;
+    } else {
+      targetUrl = DIRECT_SERVER_URL;
+    }
 
     state.serverUrl = targetUrl;
     if (serverUrlInput) serverUrlInput.value = targetUrl;
@@ -3974,7 +4097,18 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     updateTransportBadge(state.transportMode || "ws");
     persistSettings();
 
-    nativeToast(isCf ? "☁️ اتصال به کلادفلر انتخاب شد" : "⚡ اتصال مستقیم به سرور انتخاب شد");
+    if (mode === "cleanip") {
+      nativeToast("🎯 اتصال با کلین آی‌پی (Clean IP) انتخاب شد");
+      if (gateCleanIp && gateCleanIpBlock && !gateCleanIpBlock.classList.contains("hidden")) {
+        gateCleanIp.focus();
+      } else if (modalCleanIp && modalCleanIpBlock && !modalCleanIpBlock.classList.contains("hidden")) {
+        modalCleanIp.focus();
+      }
+    } else if (mode === "cloudflare") {
+      nativeToast("☁️ اتصال به کلادفلر انتخاب شد");
+    } else {
+      nativeToast("⚡ اتصال مستقیم به سرور انتخاب شد");
+    }
 
     if (autoTest) {
       const feedbackEl = (roomGate && !roomGate.classList.contains("hidden")) ? gateTestFeedback : serverTestFeedback;
@@ -3982,7 +4116,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       testServerConnectivity(targetUrl, feedbackEl, btnEl);
     }
 
-    if (isCf) {
+    if (mode === "cloudflare") {
       queryActiveTunnel();
     }
   }
@@ -3999,12 +4133,16 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
         if (data && data.tunnel && data.tunnel.active && data.tunnel.ws_url) {
           state.activeTunnelUrl = data.tunnel.ws_url;
           if (state.connectionMode === "cloudflare") {
-            state.serverUrl = data.tunnel.ws_url;
-            if (serverUrlInput) serverUrlInput.value = data.tunnel.ws_url;
-            if (modalServerUrl) modalServerUrl.value = data.tunnel.ws_url;
-            updatePresetSelectionUI("cloudflare");
-            updateTransportBadge(state.transportMode || "ws");
-            persistSettings();
+            const currentVal = (serverUrlInput && serverUrlInput.value.trim()) || state.serverUrl;
+            const isDefaultOrOldTunnel = !currentVal || isCloudflareUrl(currentVal);
+            if (isDefaultOrOldTunnel) {
+              state.serverUrl = data.tunnel.ws_url;
+              if (serverUrlInput) serverUrlInput.value = data.tunnel.ws_url;
+              if (modalServerUrl) modalServerUrl.value = data.tunnel.ws_url;
+              updatePresetSelectionUI("cloudflare");
+              updateTransportBadge(state.transportMode || "ws");
+              persistSettings();
+            }
           }
           return data.tunnel;
         }
@@ -4018,12 +4156,22 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
     let rawUrl = (targetUrl || "").trim();
     if (!rawUrl) {
-      rawUrl = state.serverUrl || DIRECT_SERVER_URL;
+      if (state.connectionMode === "cloudflare") {
+        rawUrl = state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com";
+      } else if (state.connectionMode === "cleanip") {
+        const cip = (gateCleanIp && gateCleanIp.value.trim()) || (modalCleanIp && modalCleanIp.value.trim()) || state.cleanIp || "104.16.132.229";
+        rawUrl = cip.includes("://") ? cip : `wss://${cip}:443`;
+      } else {
+        rawUrl = state.serverUrl || DIRECT_SERVER_URL;
+      }
     }
 
-    const isCf = isCloudflareUrl(rawUrl);
+    const currentMode = state.connectionMode || (isCloudflareUrl(rawUrl) ? "cloudflare" : "direct");
+    const isClean = (currentMode === "cleanip");
+    const isCf = (currentMode === "cloudflare") || (!isClean && isCloudflareUrl(rawUrl));
+    const effectiveMode = isClean ? "cleanip" : (isCf ? "cloudflare" : "direct");
     // Keep user's preset selection active - do NOT delete or clear selections!
-    updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
+    updatePresetSelectionUI(effectiveMode);
 
     // Determine normalized WS and HTTP URLs
     let wsUrl = rawUrl;
@@ -4137,11 +4285,11 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       // Full Success: WebSocket is OPEN!
       feedbackEl.classList.add("success");
       const serverVersion = (httpRes.data && httpRes.data.version) ? `نسخه ${httpRes.data.version}` : "";
-      const connTitle = isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور";
+      const connTitle = isClean ? "اتصال با کلین آی‌پی" : (isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور");
       feedbackEl.innerHTML = `
         <strong>🟢 ${connTitle} با موفقیت برقرار شد!</strong>
         <div class="test-meta">
-          <span>${isCf ? "☁️ کلودفلر تونل" : "⚡ وب‌سوکت مستقیم"}: فعال</span>
+          <span>${isClean ? "🎯 کلین آی‌پی" : (isCf ? "☁️ کلودفلر تونل" : "⚡ وب‌سوکت مستقیم")}: فعال</span>
           <span>⏱️ پینگ: ${wsRes.latency} میلی‌ثانیه</span>
           ${serverVersion ? `<span>🏷️ ${serverVersion}</span>` : ""}
         </div>
@@ -4151,10 +4299,10 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
       // Auto-update state and persist
       state.serverUrl = wsUrl;
-      state.connectionMode = isCf ? "cloudflare" : "direct";
+      state.connectionMode = effectiveMode;
       if (serverUrlInput) serverUrlInput.value = wsUrl;
       if (modalServerUrl) modalServerUrl.value = wsUrl;
-      updatePresetSelectionUI(state.connectionMode);
+      updatePresetSelectionUI(effectiveMode);
       updateTransportBadge(state.transportMode || "ws");
       persistSettings();
 
@@ -4165,7 +4313,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       // Partial Success: HTTP Tunnel works, WS blocked
       feedbackEl.classList.add("warning");
       const serverVersion = (httpRes.data && httpRes.data.version) ? `نسخه ${httpRes.data.version}` : "";
-      const connTitle = isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور";
+      const connTitle = isClean ? "اتصال با کلین آی‌پی" : (isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور");
       feedbackEl.innerHTML = `
         <strong>🟡 ${connTitle} از طریق تونل امن HTTP برقرار شد</strong>
         <div class="test-meta">
@@ -4178,10 +4326,10 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       nativeToast(`🟡 ${connTitle} (تونل HTTP) متصل شد (پینگ: ${httpRes.latency}ms)`);
 
       state.serverUrl = wsUrl;
-      state.connectionMode = isCf ? "cloudflare" : "direct";
+      state.connectionMode = effectiveMode;
       if (serverUrlInput) serverUrlInput.value = wsUrl;
       if (modalServerUrl) modalServerUrl.value = wsUrl;
-      updatePresetSelectionUI(state.connectionMode);
+      updatePresetSelectionUI(effectiveMode);
       updateTransportBadge("http");
       persistSettings();
 
@@ -4192,21 +4340,21 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       // Failure
       feedbackEl.classList.add("error");
       const isTryCloudflare = rawUrl.includes("trycloudflare.com");
-      const connTitle = isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور";
+      const connTitle = isClean ? "اتصال با کلین آی‌پی" : (isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور");
       feedbackEl.innerHTML = `
         <strong>🔴 خطا در ${connTitle}!</strong>
         <div class="test-sub">هیچ پاسخی از آدرس <code>${escapeHtml(rawUrl)}</code> دریافت نشد.</div>
         <ul class="test-reasons">
           ${isTryCloudflare ? `<li><strong>آدرس کلودفلر منقضی شده:</strong> تونل‌های موقت trycloudflare پس از ریستارت سرور تغییر می‌کنند.</li>` : ""}
-          <li><strong>اختلال شبکه یا فیلترینگ:</strong> اگر از دامنه‌های کلودفلر استفاده می‌کنید، نیاز به VPN یا سرور مستقیم است.</li>
-          <li><strong>آدرس سرور:</strong> بررسی کنید آدرس سرور به درستی انتخاب شده باشد.</li>
+          <li><strong>اختلال شبکه یا فیلترینگ:</strong> اگر از دامنه‌های کلودفلر استفاده می‌کنید، نیاز به VPN، کلین آی‌پی یا سرور مستقیم است.</li>
+          <li><strong>آدرس سرور:</strong> بررسی کنید آدرس سرور یا آی‌پی تمیز به درستی انتخاب شده باشد.</li>
         </ul>
-        ${isTryCloudflare ? `<div class="test-hint">💡 پیشنهاد: دکمه «⚡ اتصال مستقیم به سرور» را انتخاب کنید یا از آدرس به‌روزشده کلودفلر استفاده فرمایید.</div>` : ""}
+        ${isTryCloudflare ? `<div class="test-hint">💡 پیشنهاد: دکمه «⚡ اتصال مستقیم به سرور» را انتخاب کنید یا از آی‌پی تمیز استفاده فرمایید.</div>` : ""}
       `;
       nativeToast(`❌ عدم برقراری ${connTitle}`);
 
       // Crucial: keep user selection intact! Do NOT remove or clear selections!
-      updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
+      updatePresetSelectionUI(effectiveMode);
     }
   }
 
@@ -4426,15 +4574,21 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   function updateTransportBadge(mode) {
     if (!transportBadge) return;
-    const isCf = (state.connectionMode === "cloudflare") || isCloudflareUrl(state.serverUrl);
+    const isClean = (state.connectionMode === "cleanip");
+    const isCf = (state.connectionMode === "cloudflare") || (!isClean && isCloudflareUrl(state.serverUrl));
+
     if (mode === "http") {
-      transportBadge.className = `transport-pill http ${isCf ? "cf" : "direct"}`;
-      transportBadge.textContent = isCf ? "☁️ اتصال به کلادفلر" : "⚡ اتصال مستقیم به سرور";
-      transportBadge.title = isCf ? `اتصال به کلادفلر (تونل امن ضد فایروال HTTP): ${state.serverUrl}` : `اتصال مستقیم به سرور (تونل امن ضد فایروال HTTP): ${state.serverUrl}`;
+      transportBadge.className = `transport-pill http ${isClean ? "cleanip" : (isCf ? "cf" : "direct")}`;
+      transportBadge.textContent = isClean ? "🎯 تونل کلین آی‌پی" : (isCf ? "☁️ اتصال به کلادفلر" : "⚡ اتصال مستقیم به سرور");
+      transportBadge.title = isClean 
+        ? `اتصال با کلین آی‌پی کلودفلر (HTTP): ${state.serverUrl}`
+        : (isCf ? `اتصال به کلادفلر (تونل امن ضد فایروال HTTP): ${state.serverUrl}` : `اتصال مستقیم به سرور (تونل امن ضد فایروال HTTP): ${state.serverUrl}`);
     } else {
-      transportBadge.className = `transport-pill ws ${isCf ? "cf" : "direct"}`;
-      transportBadge.textContent = isCf ? "☁️ اتصال به کلادفلر" : "⚡ اتصال مستقیم به سرور";
-      transportBadge.title = isCf ? `اتصال به کلادفلر (وب‌سوکت ایمن WSS پورت 443): ${state.serverUrl}` : `اتصال مستقیم به سرور (وب‌سوکت برخط پورت 8765): ${state.serverUrl}`;
+      transportBadge.className = `transport-pill ws ${isClean ? "cleanip" : (isCf ? "cf" : "direct")}`;
+      transportBadge.textContent = isClean ? "🎯 اتصال با کلین آی‌پی" : (isCf ? "☁️ اتصال به کلادفلر" : "⚡ اتصال مستقیم به سرور");
+      transportBadge.title = isClean
+        ? `اتصال با کلین آی‌پی کلودفلر (WebSocket): ${state.serverUrl}`
+        : (isCf ? `اتصال به کلادفلر (وب‌سوکت ایمن WSS پورت 443): ${state.serverUrl}` : `اتصال مستقیم به سرور: ${state.serverUrl}`);
     }
   }
 
@@ -4997,10 +5151,13 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     // Strictly enforce selected connection provider so we NEVER mistakenly use the other one:
     if (state.connectionMode === "cloudflare") {
       const candidate = sanitizeServerUrl(serverUrlInput.value || modalServerUrl.value);
-      state.serverUrl = isCloudflareUrl(candidate) ? candidate : (state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com");
+      state.serverUrl = candidate || (state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com");
+    } else if (state.connectionMode === "cleanip") {
+      const candidate = sanitizeServerUrl(serverUrlInput.value || modalServerUrl.value || (gateCleanIp && gateCleanIp.value) || (modalCleanIp && modalCleanIp.value) || state.cleanIp);
+      state.serverUrl = candidate ? (candidate.includes("://") ? candidate : `wss://${candidate}:443`) : "wss://104.16.132.229:443";
     } else {
       const candidate = sanitizeServerUrl(serverUrlInput.value || modalServerUrl.value);
-      state.serverUrl = (!isCloudflareUrl(candidate) && candidate) ? candidate : DIRECT_SERVER_URL;
+      state.serverUrl = candidate || DIRECT_SERVER_URL;
     }
     if (serverUrlInput) serverUrlInput.value = state.serverUrl;
     if (modalServerUrl) modalServerUrl.value = state.serverUrl;
@@ -5023,9 +5180,11 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     isManualDisconnect = false;
     isConnecting = true;
     state.transportMode = "ws";
-    const isCf = (state.connectionMode === "cloudflare") || isCloudflareUrl(state.serverUrl);
+    const isClean = (state.connectionMode === "cleanip");
+    const isCf = (state.connectionMode === "cloudflare") || (!isClean && isCloudflareUrl(state.serverUrl));
     updateTransportBadge("ws");
-    updateStatus("connecting", isCf ? "در حال اتصال به کلادفلر..." : "در حال اتصال به سرور مستقیم...");
+    const connectingMsg = isClean ? "در حال اتصال با کلین آی‌پی..." : (isCf ? "در حال اتصال به کلادفلر..." : "در حال اتصال به سرور مستقیم...");
+    updateStatus("connecting", connectingMsg);
 
     if (ws) {
       try {
@@ -5104,11 +5263,14 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
         state.transportMode = "ws";
         showReconnectBanner(false);
         isReconnectStopped = false;
-        const isCf = isCloudflareUrl(state.serverUrl);
+        const isClean = (state.connectionMode === "cleanip");
+        const isCf = (state.connectionMode === "cloudflare") || (!isClean && isCloudflareUrl(state.serverUrl));
+        const modeTitle = isClean ? "اتصال با کلین آی‌پی" : (isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور");
+        const modeBadge = isClean ? "🎯 اتصال با کلین آی‌پی" : (isCf ? "☁️ اتصال به کلادفلر" : "⚡ اتصال مستقیم به سرور");
         updateTransportBadge("ws");
         updateAntiDpiBadge();
-        updateStatus("connected", isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور");
-        nativeToast(isCf ? "✅ اتصال به کلادفلر برقرار شد" : "✅ اتصال مستقیم به سرور برقرار شد");
+        updateStatus("connected", modeTitle);
+        nativeToast(`✅ ${modeTitle} برقرار شد`);
         enterChatView(parsed.room || state.room);
 
         // Load initial room members & ping presence
@@ -5126,7 +5288,7 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
         appendMessage({
           type: "system",
-          text: `${isCf ? "☁️ اتصال به کلادفلر" : "⚡ اتصال مستقیم به سرور"}: به اتاق امن و اختصاصی «${parsed.room || state.room}» متصل شدید. تمامی پیام‌ها با رمزنگاری سرتاسری AES-256 و پدینگ تصادفی ضد DPI محافظت می‌شوند.`,
+          text: `${modeBadge}: به اتاق امن و اختصاصی «${parsed.room || state.room}» متصل شدید. تمامی پیام‌ها با رمزنگاری سرتاسری AES-256 و پدینگ تصادفی ضد DPI محافظت می‌شوند.`,
           isEncrypted: false,
         });
         flushOutgoingQueue();
@@ -5279,8 +5441,10 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
     if (!state.room || !state.password) return;
 
-    const isCf = isCloudflareUrl(state.serverUrl);
-    updateStatus("connecting", isCf ? "فعال‌سازی تونل HTTP کلادفلر..." : "فعال‌سازی تونل HTTP سرور مستقیم...");
+    const isClean = (state.connectionMode === "cleanip");
+    const isCf = (state.connectionMode === "cloudflare") || (!isClean && isCloudflareUrl(state.serverUrl));
+    const modeTitle = isClean ? "اتصال با کلین آی‌پی" : (isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور");
+    updateStatus("connecting", isClean ? "فعال‌سازی تونل HTTP کلین آی‌پی..." : (isCf ? "فعال‌سازی تونل HTTP کلادفلر..." : "فعال‌سازی تونل HTTP سرور مستقیم..."));
     const httpBase = getHttpBaseUrl(state.serverUrl);
 
     try {
@@ -5313,9 +5477,9 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       }
 
       const joinData = await joinRes.json();
-      updateStatus("connected", isCf ? "اتصال به کلادفلر" : "اتصال مستقیم به سرور");
+      updateStatus("connected", modeTitle);
       updateTransportBadge("http");
-      nativeToast(isCf ? "✅ اتصال به کلادفلر برقرار شد" : "✅ اتصال مستقیم به سرور برقرار شد");
+      nativeToast(`✅ ${modeTitle} برقرار شد`);
       showReconnectBanner(false);
       isReconnectStopped = false;
       enterChatView(state.room);
@@ -5537,9 +5701,12 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   function scheduleReconnect() {
     if (isReconnectStopped || !state.autoReconnect || isManualDisconnect) return;
     clearTimeout(reconnectTimer);
-    const isCf = (state.connectionMode === "cloudflare") || isCloudflareUrl(state.serverUrl);
-    updateStatus("connecting", isCf ? "تلاش مجدد اتصال کلادفلر..." : "تلاش مجدد اتصال مستقیم...");
-    showReconnectBanner(true, isCf ? "در حال تلاش برای اتصال مجدد به کلادفلر تا ۴ ثانیه..." : "در حال تلاش برای اتصال مجدد به سرور مستقیم تا ۴ ثانیه...", false);
+    const isClean = (state.connectionMode === "cleanip");
+    const isCf = (state.connectionMode === "cloudflare") || (!isClean && isCloudflareUrl(state.serverUrl));
+    const reconnectTitle = isClean ? "تلاش مجدد اتصال با کلین آی‌پی..." : (isCf ? "تلاش مجدد اتصال کلادفلر..." : "تلاش مجدد اتصال مستقیم...");
+    const bannerTitle = isClean ? "در حال تلاش برای اتصال مجدد با کلین آی‌پی تا ۴ ثانیه..." : (isCf ? "در حال تلاش برای اتصال مجدد به کلادفلر تا ۴ ثانیه..." : "در حال تلاش برای اتصال مجدد به سرور مستقیم تا ۴ ثانیه...");
+    updateStatus("connecting", reconnectTitle);
+    showReconnectBanner(true, bannerTitle, false);
     reconnectTimer = setTimeout(() => {
       if (state.room && state.password && !isReconnectStopped && !isManualDisconnect) {
         connectAndJoinRoom(state.room, state.password, state.nickname);
@@ -5783,14 +5950,15 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
       serverTestFeedback.classList.add("hidden");
       serverTestFeedback.innerHTML = "";
     }
-    if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
+    if (gateCleanIp) gateCleanIp.value = state.cleanIp || "";
+  if (modalCleanIp) modalCleanIp.value = state.cleanIp || "";
     if (antiDpiToggle) antiDpiToggle.checked = state.antiDpi;
     if (decoyChaffToggle) decoyChaffToggle.checked = state.decoyChaff;
     autoReconnectInput.checked = state.autoReconnect;
     if (notificationToggle) notificationToggle.checked = state.notificationsEnabled;
     if (vibrationToggle) vibrationToggle.checked = state.vibrationEnabled;
     keepCredentialsInput.checked = state.keepCredentials;
-    updatePresetSelectionUI(state.connectionMode || getConnectionMode(state.serverUrl));
+    updatePresetSelectionUI(state.connectionMode);
     settingsModal.classList.remove("hidden");
     if (state.connectionMode === "cloudflare") {
       queryActiveTunnel();
@@ -5800,10 +5968,14 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
   function closeSettings() {
     document.body.classList.remove("modal-open");
     const oldUrl = state.serverUrl;
-    state.serverUrl = sanitizeServerUrl(modalServerUrl.value);
+    if (modalServerUrl.value.trim()) {
+      state.serverUrl = sanitizeServerUrl(modalServerUrl.value);
+    }
     serverUrlInput.value = state.serverUrl;
-    state.connectionMode = getConnectionMode(state.serverUrl);
-    if (modalCleanIp) state.cleanIp = modalCleanIp.value.trim();
+    if (modalCleanIp) {
+      state.cleanIp = modalCleanIp.value.trim();
+      if (gateCleanIp) gateCleanIp.value = state.cleanIp;
+    }
     if (antiDpiToggle) state.antiDpi = antiDpiToggle.checked;
     if (decoyChaffToggle) state.decoyChaff = decoyChaffToggle.checked;
     state.autoReconnect = autoReconnectInput.checked;
@@ -5834,6 +6006,12 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     });
   }
 
+  if (btnGatePresetCleanIp) {
+    btnGatePresetCleanIp.addEventListener("click", () => {
+      selectConnectionPreset("cleanip", false);
+    });
+  }
+
   // Connection Presets Handlers - Settings Modal
   if (btnPresetDirect) {
     btnPresetDirect.addEventListener("click", () => {
@@ -5847,23 +6025,65 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
     });
   }
 
+  if (btnPresetCleanIp) {
+    btnPresetCleanIp.addEventListener("click", () => {
+      selectConnectionPreset("cleanip", false);
+    });
+  }
+
+  // Synchronize Clean IP inputs across Gate and Modal
+  function handleCleanIpChange(val) {
+    state.cleanIp = (val || "").trim();
+    if (gateCleanIp && gateCleanIp.value !== state.cleanIp) gateCleanIp.value = state.cleanIp;
+    if (modalCleanIp && modalCleanIp.value !== state.cleanIp) modalCleanIp.value = state.cleanIp;
+    if (state.connectionMode === "cleanip") {
+      const targetUrl = state.cleanIp ? (state.cleanIp.includes("://") ? state.cleanIp : `wss://${state.cleanIp}:443`) : "wss://104.16.132.229:443";
+      state.serverUrl = targetUrl;
+      if (serverUrlInput) serverUrlInput.value = targetUrl;
+      if (modalServerUrl) modalServerUrl.value = targetUrl;
+    }
+    updatePresetSelectionUI(state.connectionMode);
+    persistSettings();
+  }
+
+  if (gateCleanIp) {
+    gateCleanIp.addEventListener("input", () => handleCleanIpChange(gateCleanIp.value));
+  }
+  if (modalCleanIp) {
+    modalCleanIp.addEventListener("input", () => handleCleanIpChange(modalCleanIp.value));
+  }
+
   // Direct test connection button listeners
   if (btnTestServerConn) {
     btnTestServerConn.addEventListener("click", () => {
-      const isCf = (state.connectionMode === "cloudflare") || isCloudflareUrl(modalServerUrl.value.trim() || state.serverUrl);
-      const urlToTest = modalServerUrl.value.trim() || (isCf ? (state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com") : DIRECT_SERVER_URL);
-      updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
+      let urlToTest = (modalServerUrl && modalServerUrl.value.trim()) || "";
+      if (!urlToTest) {
+        if (state.connectionMode === "cloudflare") {
+          urlToTest = state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com";
+        } else if (state.connectionMode === "cleanip") {
+          const cip = (modalCleanIp && modalCleanIp.value.trim()) || state.cleanIp || "104.16.132.229";
+          urlToTest = cip.includes("://") ? cip : `wss://${cip}:443`;
+        } else {
+          urlToTest = DIRECT_SERVER_URL;
+        }
+      }
       testServerConnectivity(urlToTest, serverTestFeedback, btnTestServerConn);
     });
   }
 
   if (btnTestGateConn) {
     btnTestGateConn.addEventListener("click", () => {
-      const isCf = (state.connectionMode === "cloudflare") || (btnGatePresetCfTunnel && btnGatePresetCfTunnel.classList.contains("selected"));
-      const urlToTest = isCf 
-        ? (state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com")
-        : DIRECT_SERVER_URL;
-      updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
+      let urlToTest = (serverUrlInput && serverUrlInput.value.trim()) || "";
+      if (!urlToTest) {
+        if (state.connectionMode === "cloudflare") {
+          urlToTest = state.activeTunnelUrl || "wss://medications-firewall-angle-counter.trycloudflare.com";
+        } else if (state.connectionMode === "cleanip") {
+          const cip = (gateCleanIp && gateCleanIp.value.trim()) || (modalCleanIp && modalCleanIp.value.trim()) || state.cleanIp || "104.16.132.229";
+          urlToTest = cip.includes("://") ? cip : `wss://${cip}:443`;
+        } else {
+          urlToTest = DIRECT_SERVER_URL;
+        }
+      }
       testServerConnectivity(urlToTest, gateTestFeedback, btnTestGateConn);
     });
   }
@@ -5874,30 +6094,30 @@ cat << 'APP_EOF' > "${INSTALL_DIR}/web/app.js"
 
   if (modalServerUrl) {
     modalServerUrl.addEventListener("input", () => {
-      const isCf = isCloudflareUrl(modalServerUrl.value.trim());
-      updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
+      state.serverUrl = modalServerUrl.value.trim();
+      if (serverUrlInput) serverUrlInput.value = modalServerUrl.value;
+      updatePresetSelectionUI(state.connectionMode);
     });
     modalServerUrl.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        const isCf = isCloudflareUrl(modalServerUrl.value.trim());
-        updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
-        testServerConnectivity(modalServerUrl.value.trim() || state.serverUrl, serverTestFeedback, btnTestServerConn);
+        const urlToTest = modalServerUrl.value.trim() || state.serverUrl;
+        testServerConnectivity(urlToTest, serverTestFeedback, btnTestServerConn);
       }
     });
   }
 
   if (serverUrlInput) {
     serverUrlInput.addEventListener("input", () => {
-      const isCf = isCloudflareUrl(serverUrlInput.value.trim());
-      updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
+      state.serverUrl = serverUrlInput.value.trim();
+      if (modalServerUrl) modalServerUrl.value = serverUrlInput.value;
+      updatePresetSelectionUI(state.connectionMode);
     });
     serverUrlInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        const isCf = isCloudflareUrl(serverUrlInput.value.trim());
-        updatePresetSelectionUI(isCf ? "cloudflare" : "direct");
-        testServerConnectivity(serverUrlInput.value.trim() || state.serverUrl, gateTestFeedback, btnTestGateConn);
+        const urlToTest = serverUrlInput.value.trim() || state.serverUrl;
+        testServerConnectivity(urlToTest, gateTestFeedback, btnTestGateConn);
       }
     });
   }
