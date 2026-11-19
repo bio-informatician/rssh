@@ -52,7 +52,7 @@
         <div class="app-title">
           <span>رخش چت</span>
           <span class="version-tag">v1.6.0</span>
-          <span id="transportBadge" class="transport-pill ws" title="روش ارتباط و انتقال داده">⚡ وب‌سوکت</span>
+          <span id="transportBadge" class="transport-pill ws direct" title="روش ارتباط و انتقال داده">⚡ اتصال مستقیم به سرور</span>
           <span id="antiDpiBadge" class="anti-dpi-pill active" title="سپر ضد DPI: پدینگ تصادفی و فرکانس نامنظم پکت‌ها فعال است">🛡️ ضد DPI</span>
         </div>
         <div class="connection-status">
@@ -149,9 +149,32 @@
             <small class="field-hint">اگر اتاق هنوز ایجاد نشده باشد، با این رمز ساخته می‌شود.</small>
           </div>
 
+          <!-- Connection Mode Selection in Room Gate -->
+          <div class="form-group connection-preset-group">
+            <label class="field-label-sm" style="margin-bottom:6px;display:block;">روش اتصال:</label>
+            <div class="preset-buttons-grid">
+              <button type="button" id="btnGatePresetDirect" class="preset-btn selected">
+                ⚡ اتصال مستقیم به سرور
+              </button>
+              <button type="button" id="btnGatePresetCfTunnel" class="preset-btn cf-preset">
+                ☁️ اتصال به کلادفلر
+              </button>
+            </div>
+            <div class="server-test-row" style="margin-top:8px;">
+              <button type="button" id="btnTestGateConn" class="btn-test-conn btn-test-conn-sm">
+                <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <span>🔍 تست و بررسی آنی اتصال</span>
+              </button>
+            </div>
+            <div id="gateTestFeedback" class="test-feedback-box hidden"></div>
+          </div>
+
           <div class="form-group advanced-toggle-group">
             <button type="button" id="btnToggleAdvanced" class="link-btn">
-              ⚙️ تنظیمات پیشرفته آدرس سرور
+              ⚙️ ویرایش دستی آدرس سرور
             </button>
             <div id="advancedServerBlock" class="hidden">
               <input 
@@ -161,16 +184,6 @@
                 placeholder="ws://193.168.175.227:8765" 
                 value="" 
               />
-              <div class="server-test-row">
-                <button type="button" id="btnTestGateConn" class="btn-test-conn btn-test-conn-sm">
-                  <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none">
-                    <circle cx="11" cy="11" r="8"></circle>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                  </svg>
-                  <span>🔍 تست آنی اتصال سرور</span>
-                </button>
-              </div>
-              <div id="gateTestFeedback" class="test-feedback-box hidden"></div>
             </div>
           </div>
 
@@ -266,16 +279,16 @@
 
           <!-- Connection Mode Presets -->
           <div class="presets-block">
-            <span class="field-label-sm">الگوهای اتصال ضد مسدودسازی:</span>
+            <span class="field-label-sm">روش اتصال به سرور:</span>
             <div class="preset-buttons-grid">
-              <button type="button" id="btnPresetDirect" class="preset-btn">
-                ⚡ سرور مستقیم (:8765)
+              <button type="button" id="btnPresetDirect" class="preset-btn selected">
+                ⚡ اتصال مستقیم به سرور
               </button>
-              <button type="button" id="btnPresetCfTunnel" class="preset-btn">
-                ☁️ کلودفلر تونل (:443)
+              <button type="button" id="btnPresetCfTunnel" class="preset-btn cf-preset">
+                ☁️ اتصال به کلادفلر
               </button>
             </div>
-            <small class="field-hint">در صورت اختلال شدید یا فیلترینگ پورت، از کلودفلر تونل یا VPN فعال استفاده کنید.</small>
+            <small class="field-hint">در صورت اختلال شدید یا فیلترینگ پورت، از کلودفلر یا VPN فعال استفاده کنید.</small>
           </div>
 
           <!-- Anti-DPI & Traffic Shaping Section -->
