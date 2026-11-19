@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_primary">#0a0e17</color>
+    <color name="bg_surface">#111827</color>
+    <color name="accent_primary">#10b981</color>
+    <color name="accent_cyan">#06b6d4</color>
+    <color name="text_primary">#f3f4f6</color>
+    <color name="text_secondary">#9ca3af</color>
+    <color name="terminal_black">#05080f</color>
+</resources>

@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>رخش SSH - Rakhssh SSH</title>
+  <link rel="stylesheet" href="xterm.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="appContainer">
+    <!-- Top Header Bar -->
+    <header id="topBar">
+      <div class="header-left">
+        <button id="btnToggleDrawer" class="icon-btn" title="فهرست نشست‌ها">
+          <span class="icon">⚡</span>
+          <span class="btn-text">نشست‌ها</span>
+        </button>
+        <div id="sessionIndicator" class="session-indicator disconnected">
+          <span class="indicator-dot"></span>
+          <span id="sessionStatusText" class="indicator-text">غیرمتصل</span>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <span class="app-title">رخش <span class="app-title-accent">SSH</span></span>
+      </div>
+
+      <div class="header-right">
+        <button id="btnReconnect" class="icon-btn" title="اتصال مجدد" style="display:none;">
+          <span class="icon">🔄</span>
+        </button>
+        <button id="btnDisconnect" class="icon-btn danger" title="قطع اتصال" style="display:none;">
+          <span class="icon">⏻</span>
+        </button>
+        <button id="btnOpenSettings" class="icon-btn" title="تنظیمات">
+          <span class="icon">⚙️</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Terminal Canvas Area -->
+    <main id="terminalContainer">
+      <div id="terminal"></div>
+      <div id="terminalOverlay" class="terminal-overlay">
+        <div class="overlay-card">
+          <div class="overlay-icon">⚡</div>
+          <h2 class="overlay-title">رخش ترمینال SSH</h2>
+          <p class="overlay-desc">برای شروع کار، یک سرور را انتخاب کنید یا اطلاعات اتصال را وارد نمایید.</p>
+          <div class="overlay-actions">
+            <button id="btnOverlayConnect" class="btn btn-primary">
+              <span class="icon">⚡</span> انتخاب یا اتصال به سرور
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Mobile Virtual Accessory Toolbar -->
+    <footer id="accessoryBar">
+      <div class="key-scroll-track">
+        <button class="key-btn" data-key="ESC">ESC</button>
+        <button class="key-btn" data-key="TAB">TAB</button>
+        <button class="key-btn toggle-key" id="keyCtrl" data-key="CTRL">CTRL</button>
+        <button class="key-btn toggle-key" id="keyAlt" data-key="ALT">ALT</button>
+        <button class="key-btn" data-key="UP">▲</button>
+        <button class="key-btn" data-key="DOWN">▼</button>
+        <button class="key-btn" data-key="LEFT">◄</button>
+        <button class="key-btn" data-key="RIGHT">►</button>
+        <button class="key-btn" data-key="|">|</button>
+        <button class="key-btn" data-key="~">~</button>
+        <button class="key-btn" data-key="/">/</button>
+        <button class="key-btn" data-key="-">-</button>
+        <button class="key-btn" data-key=":">:</button>
+        <button class="key-btn" data-key=";">;</button>
+        <button class="key-btn" id="keyClear">Clr</button>
+        <button class="key-btn" id="keyPaste">📋</button>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Sessions Drawer / Modal -->
+  <div id="drawerOverlay" class="drawer-overlay hidden">
+    <div class="drawer-content">
+      <div class="drawer-header">
+        <div class="drawer-title-box">
+          <span class="icon">🖥️</span>
+          <h3>مدیریت و اتصال سرورها</h3>
+        </div>
+        <button id="btnCloseDrawer" class="close-btn">&times;</button>
+      </div>
+
+      <div class="drawer-body">
+        <!-- Quick Presets -->
+        <div class="section-label">سرورهای آماده و پیش‌فرض</div>
+        <div class="presets-grid">
+          <button class="preset-card active" id="presetDirectServer">
+            <div class="preset-icon">⚡</div>
+            <div class="preset-info">
+              <div class="preset-name">سرور مستقیم رخش</div>
+              <div class="preset-meta">193.168.175.227:22</div>
+            </div>
+          </button>
+          <button class="preset-card" id="presetWebSsh">
+            <div class="preset-icon">☁️</div>
+            <div class="preset-info">
+              <div class="preset-name">وب اس اس اچ (تونل)</div>
+              <div class="preset-meta">WebSocket WSS Relay</div>
+            </div>
+          </button>
+        </div>
+
+        <!-- Connection Details Form -->
+        <div class="section-label">مشخصات اتصال SSH</div>
+        <form id="connectionForm" onsubmit="return false;">
+          <div class="form-row">
+            <div class="form-group flex-2">
+              <label for="inputHost">آدرس سرور یا دامنه (Host):</label>
+              <input type="text" id="inputHost" class="form-input text-ltr" placeholder="193.168.175.227" value="193.168.175.227" required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+            </div>
+            <div class="form-group flex-1">
+              <label for="inputPort">پورت (Port):</label>
+              <input type="number" id="inputPort" class="form-input text-ltr" placeholder="22" value="22" required>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="inputUsername">نام کاربری (Username):</label>
+            <input type="text" id="inputUsername" class="form-input text-ltr" placeholder="root / agent" value="agent" required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          </div>
+
+          <div class="form-group">
+            <label>روش احراز هویت (Authentication):</label>
+            <div class="auth-tabs">
+              <button type="button" class="auth-tab-btn active" id="tabAuthPassword">🔑 کلمه عبور (Password)</button>
+              <button type="button" class="auth-tab-btn" id="tabAuthKey">📜 کلید اختصاصی (Private Key)</button>
+            </div>
+          </div>
+
+          <div id="passwordFieldGroup" class="form-group">
+            <label for="inputPassword">کلمه عبور (Password):</label>
+            <div class="password-wrapper">
+              <input type="password" id="inputPassword" class="form-input text-ltr" placeholder="رمز عبور کاربر SSH">
+              <button type="button" id="btnTogglePassword" class="toggle-pwd-btn">👁️</button>
+            </div>
+          </div>
+
+          <div id="keyFieldGroup" class="form-group" style="display: none;">
+            <label for="inputPrivateKey">کلید خصوصی (OpenSSH / RSA / Ed25519 PEM):</label>
+            <textarea id="inputPrivateKey" class="form-input text-ltr key-textarea" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----..."></textarea>
+            <label for="inputKeyPassphrase" style="margin-top: 8px;">رمز عبور کلید (Passphrase - اختیاری):</label>
+            <input type="password" id="inputKeyPassphrase" class="form-input text-ltr" placeholder="در صورت وجود رمز روی فایل کلید">
+          </div>
+
+          <div class="form-group">
+            <label>روش انتقال و شبکه (Protocol):</label>
+            <div class="radio-cards">
+              <label class="radio-card active" id="radioDirectMode">
+                <input type="radio" name="connProtocol" value="direct" checked>
+                <div class="radio-card-body">
+                  <div class="radio-title">⚡ اتصال مستقیم SSH</div>
+                  <div class="radio-desc">سوکت مستقیم TCP (بسیار پرسرعت و پایدار)</div>
+                </div>
+              </label>
+              <label class="radio-card" id="radioWsMode">
+                <input type="radio" name="connProtocol" value="websocket">
+                <div class="radio-card-body">
+                  <div class="radio-title">☁️ وب اس اس اچ / تونل کلادفلر</div>
+                  <div class="radio-desc">عبور از فیلترینگ و پورت‌های بسته با WebSocket/TLS</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div id="wsUrlRow" class="form-group" style="display: none;">
+            <label for="inputWsUrl">آدرس تونل وب اس اس اچ (WSS URL):</label>
+            <input type="text" id="inputWsUrl" class="form-input text-ltr" placeholder="wss://occurring-nearby-salvador-photography.trycloudflare.com/ws/ssh">
+          </div>
+
+          <div class="form-row-checkbox">
+            <label class="checkbox-container">
+              <input type="checkbox" id="chkSaveProfile" checked>
+              <span class="checkmark"></span>
+              <span class="checkbox-label">ذخیره این سرور در فهرست نشان‌شده‌ها</span>
+            </label>
+          </div>
+
+          <button id="btnSubmitConnect" class="btn btn-primary btn-block">
+            <span class="icon">⚡</span> اتصال فوری به سرور
+          </button>
+        </form>
+
+        <!-- Saved Profiles List -->
+        <div class="section-label" style="margin-top: 24px;">سرورهای ذخیره‌شده</div>
+        <div id="savedProfilesList" class="saved-profiles-list">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span class="icon">⚙️</span> تنظیمات ترمینال رخش
+        </div>
+        <button id="btnCloseSettings" class="close-btn">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="setting-item">
+          <label>اندازه فونت ترمینال:</label>
+          <div class="font-size-control">
+            <button id="btnFontDec" class="size-btn">−</button>
+            <span id="fontSizeVal">14px</span>
+            <button id="btnFontInc" class="size-btn">+</button>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <label>پوسته رنگی ترمینال (Color Theme):</label>
+          <select id="selectTheme" class="form-select">
+            <option value="cyber">🟢 سایبر زمردی (Cyber Emerald - پیش‌فرض)</option>
+            <option value="dracula">🟣 دراکولا (Dracula)</option>
+            <option value="solarized">🟡 سولارایزد تاریک (Solarized Dark)</option>
+            <option value="matrix">🟢 ماتریکس خالص (Matrix Neon)</option>
+            <option value="oneDark">🔵 وان دارک (One Dark)</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <label>شکل مکان‌نما (Cursor):</label>
+          <select id="selectCursor" class="form-select">
+            <option value="block">█ بلوک (Block)</option>
+            <option value="underline">_ زیرخط (Underline)</option>
+            <option value="bar">| خط عمودی (Bar)</option>
+          </select>
+        </div>
+
+        <div class="setting-item toggle-item">
+          <div>
+            <div class="toggle-title">چشمک زدن مکان‌نما</div>
+            <div class="toggle-desc">نمایش افکت چشمک زن روی کرسر</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="chkCursorBlink" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-item toggle-item">
+          <div>
+            <div class="toggle-title">روشن ماندن صفحه (Wake Lock)</div>
+            <div class="toggle-desc">جلوگیری از خاموش شدن صفحه در حین اتصال</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="chkWakeLock" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-item toggle-item">
+          <div>
+            <div class="toggle-title">لرزش لمسی کلیدها (Haptics)</div>
+            <div class="toggle-desc">ویبره ملایم هنگام فشردن کلیدهای مجازی</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="chkHaptics" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="settings-actions">
+          <button id="btnClearScreen" class="btn btn-secondary btn-block">
+            🧹 پاک کردن کامل صفحه ترمینال
+          </button>
+        </div>
+
+        <div class="app-version-info">
+          رخش ترمینال SSH - نسخه ۱.۰.۰<br>
+          مبتنی بر استانداردهای رمزنگاری ایمن RFC 4253 و xterm.js
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="xterm.js"></script>
+  <script src="xterm-addon-fit.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
