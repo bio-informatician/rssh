@@ -1,81 +1,72 @@
-# Rakhssh Server (`rssh-server`) — Production Deployment Guide
+# Rakhssh Multi-Branch Integrity & Test Suite (`test` branch)
 
-Signaling and fallback relay server for the Rakhssh (`rssh`) remote access network.
+This branch contains the multi-branch automated testing, security auditing, and executability verification harness for the `bio-informatician/rssh` repository.
 
----
+## 🎯 Purpose
+The Rakhsh ecosystem is organized into dedicated branches within this repository:
+- `main`: Core reverse SSH daemon & shared configs
+- `client-linux`: Linux reverse SSH client (Go)
+- `server-linux`: Linux reverse SSH server (Go, Caddy, Nginx, Docker)
+- `chat`: Rakhsh Chat E2EE messaging platform & Android client
+- `ssh-android-client`: Rakhsh Android SSH terminal client (`org.rssh.terminal`)
+- `ssh-cli-client`: Interactive CLI SSH client (`rssh_cli.py`)
+- `ssh-web-client`: Web SSH terminal & WebSocket server (`server.py`, port 8766)
 
-## 1. Architecture Overview
-
-`rssh-server` coordinates user-space P2P signaling and acts as an encrypted fallback relay when direct peer-to-peer connectivity is prevented by symmetric NATs or firewalls.
-
-- **Port:** Defaults to `:8443` (HTTP/WebSocket) or direct TLS on `:443`.
-- **Protocol:** Standard WebSocket (WSS) handling initial registration, session matchmaking, PAKE point exchange, and encrypted fallback relay frames.
-- **Resource Limits:**
-  - 64 KB maximum WebSocket message limit to prevent memory exhaustion.
-  - 5,000 maximum concurrent active connections (configurable in source).
-  - Rate-limited registration and connection endpoints keyed by parsed client IP.
-  - Automatic idle timeout (30m default) and hard maximum session duration (2h default).
+The test suite in this branch audits, tests, and verifies the health of **all branches** without altering their code or disrupting production services.
 
 ---
 
-## 2. Deployment Options
+## 🧪 Verification Modules
 
-### Option A: Systemd Service (Recommended for Bare-Metal / VPS)
+### 1. `scripts/check_functionality.py`
+Extracts each branch via isolated `git archive` streams and validates:
+- Python AST structure and imports
+- Node.js JavaScript syntax verification (`node -c`)
+- Web UI layouts and HTML elements
+- Go module contracts (`go.mod`)
+- Reverse proxy configs (Caddy / Nginx)
+- Service unit definitions and installers
 
-1. **Build and install:**
-   ```bash
-   make build
-   sudo make install-service
-   ```
+### 2. `scripts/check_security.py`
+Audits each branch for security posture:
+- Secret & token scanning (zero credentials / private keys checked into Git)
+- Python AST security checking (flags unsafe `eval()`, `exec()`, or unvalidated `shell=True`)
+- File permissions hygiene (ensures no world-writable permissions)
+- Transport layer security (TLS/WSS validation)
+- PIN brute-force lockout and rate-limiting enforcement
 
-2. **Configure Nginx or Caddy reverse proxy for TLS termination (Port 443):**
-   - **Nginx:** Use the provided [nginx/rssh-server.conf](nginx/rssh-server.conf).
-   - **Caddy:** Use the provided [caddy/Caddyfile](caddy/Caddyfile).
-
-3. **Verify service:**
-   ```bash
-   sudo systemctl status rssh-server
-   sudo journalctl -u rssh-server -f
-   ```
-
----
-
-### Option B: Docker / Docker Compose
-
-1. **Launch container:**
-   ```bash
-   docker compose up -d --build
-   ```
-
-2. **View logs:**
-   ```bash
-   docker compose logs -f
-   ```
+### 3. `scripts/check_executability.py`
+Validates end-to-end execution readiness:
+- Python bytecode compilation (`python3 -m py_compile`)
+- Bash syntax validation (`bash -n`)
+- Script file executable permissions (`+x`)
+- CLI command executions (e.g. `rssh_cli.py --help`)
 
 ---
 
-## 3. Configuration Flags
+## 🚀 Running the Tests
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--addr` | `:8443` | Listen address |
-| `--cert` | `""` | Path to TLS certificate (if terminating TLS directly in Go) |
-| `--key` | `""` | Path to TLS private key |
-| `--idle-timeout` | `30m` | Disconnect sessions idle for longer than this duration |
-| `--max-duration` | `2h` | Maximum absolute session duration before forced rotation |
-
----
-
-## 4. Health & Monitoring
-
-The server exposes HTTP `GET /` returning server status and active connection count:
+### Run All Tests Across All Branches:
 ```bash
-curl -i http://localhost:8443/
+./test_all.sh
+# Or directly:
+python3 run_all_tests.py
 ```
-Expected output:
-```http
-HTTP/1.1 200 OK
-Content-Type: text/plain; charset=utf-8
 
-🐎⚡ Rakhssh Signaling & Relay Server is online. Active connections: 0
+### Run on a Specific Branch:
+```bash
+python3 run_all_tests.py chat
+python3 run_all_tests.py ssh-cli-client
+```
+
+### Run an Individual Test Module:
+```bash
+python3 scripts/check_functionality.py
+python3 scripts/check_security.py
+python3 scripts/check_executability.py
+```
+
+### Run Unit Tests of the Test Suite:
+```bash
+python3 -m unittest tests/test_suite.py
 ```
