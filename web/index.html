@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>رخش وب اس اس اچ - Rakhssh Web SSH</title>
+  <link rel="stylesheet" href="xterm.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="appContainer">
+    <!-- Header -->
+    <header id="topBar">
+      <div class="header-left">
+        <div id="sessionIndicator" class="session-indicator connecting">
+          <span class="indicator-dot"></span>
+          <span id="sessionStatusText" class="indicator-text">در حال اتصال...</span>
+        </div>
+      </div>
+      <div class="header-center">
+        <span class="app-title">رخش <span class="app-title-accent">Web SSH</span></span>
+      </div>
+      <div class="header-right">
+        <button id="btnReconnect" class="icon-btn" title="اتصال مجدد">
+          <span class="icon">🔄</span> اتصال مجدد
+        </button>
+        <button id="btnClearScreen" class="icon-btn" title="پاک‌سازی صفحه">
+          <span class="icon">🧹</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Terminal Canvas -->
+    <main id="terminalContainer">
+      <div id="terminal"></div>
+    </main>
+
+    <!-- Mobile Accessory Bar -->
+    <footer id="accessoryBar">
+      <div class="key-scroll-track">
+        <button class="key-btn" data-key="ESC">ESC</button>
+        <button class="key-btn" data-key="TAB">TAB</button>
+        <button class="key-btn toggle-key" id="keyCtrl" data-key="CTRL">CTRL</button>
+        <button class="key-btn toggle-key" id="keyAlt" data-key="ALT">ALT</button>
+        <button class="key-btn" data-key="UP">▲</button>
+        <button class="key-btn" data-key="DOWN">▼</button>
+        <button class="key-btn" data-key="LEFT">◄</button>
+        <button class="key-btn" data-key="RIGHT">►</button>
+        <button class="key-btn" data-key="|">|</button>
+        <button class="key-btn" data-key="~">~</button>
+        <button class="key-btn" data-key="/">/</button>
+        <button class="key-btn" data-key="-">-</button>
+        <button class="key-btn" data-key=":">:</button>
+        <button class="key-btn" data-key=";">;</button>
+      </div>
+    </footer>
+  </div>
+
+  <script src="xterm.js"></script>
+  <script src="xterm-addon-fit.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
